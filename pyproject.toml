@@ -1,0 +1,46 @@
+[project]
+name = "snchat"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "chromadb>=1.5.9",
+    "langchain>=1.3.1",
+    "langchain-chroma>=1.1.0",
+    "langchain-classic>=1.0.7",
+    "langchain-community>=0.4.1",
+    "langchain-core>=1.4.0",
+    "langchain-ollama>=1.1.0",
+    "langchain-text-splitters>=1.1.2",
+    "lark>=1.3.1",
+    "streamlit>=1.57.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.13",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort (import sorting)
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "B",   # flake8-bugbear
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint.isort]
+from-first = false
+combine-as-imports = true
+force-sort-within-sections = true
