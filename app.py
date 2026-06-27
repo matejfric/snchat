@@ -481,24 +481,51 @@ def format_metrics(usage: dict) -> str | None:
     return line
 
 
+def _scope_phrase(parsed: DiarySearchQuery) -> str:
+    """Human-readable description of what was actually retrieved (topic + date), used
+    to anchor the answer so terse follow-ups ('and in 2026?') aren't pulled toward an
+    earlier turn. Built from the filters that were applied, so it is ground truth."""
+    topic = parsed.query.strip() if parsed.query else ""
+    if parsed.year and parsed.month and parsed.day:
+        when = f"on {parsed.year:04d}-{parsed.month:02d}-{parsed.day:02d}"
+    elif parsed.year and parsed.month:
+        when = f"in {parsed.year:04d}-{parsed.month:02d}"
+    elif parsed.year:
+        when = f"in {parsed.year}"
+    elif parsed.month:
+        when = f"in month {parsed.month}"
+    else:
+        when = ""
+    return " ".join(p for p in (topic, when) if p)
+
+
 def build_answer_messages(
     docs: list[Document],
     user_query: str,
     chat_history: list[BaseMessage],
     today: dt.date,
+    scope: str,
 ) -> list[BaseMessage]:
     """Build the chat messages for a point-lookup answer (system + history + human),
-    with the retrieved entries stuffed into the context."""
+    with the retrieved entries stuffed into the context. `scope` anchors the answer on
+    the actually-retrieved topic/period so prior turns can't pull it off-target."""
+    anchor = (
+        f"The user's current request is about: {scope}.\n"
+        "The conversation history may mention other time periods or topics — answer "
+        "the CURRENT request only. The diary excerpts below have ALREADY been filtered "
+        "to match it; treat them as the complete set for this question.\n"
+        if scope
+        else "Answer the user's question using ONLY the diary excerpts below.\n"
+    )
     system_prompt = (
         "/no_think\n"
         "You are a compassionate personal assistant helping the user "
         "review their diary.\n"
         f"Today's date is {today.isoformat()}.\n"
-        "Answer the user's question accurately using ONLY the provided "
-        "diary excerpts below.\n"
+        f"{anchor}"
         "Always reference the specific date(s) of the entries you are citing.\n"
-        "If you cannot find the answer in the contexts, say honestly that you can't "
-        "recall details about that.\n\n"
+        "If there are no excerpts below, say honestly that you have no entries for "
+        "that.\n\n"
         "Context:\n{context}"
     )
     prompt = ChatPromptTemplate.from_messages(
@@ -531,7 +558,7 @@ def _batch_by_chars(docs: list[Document], budget: int) -> list[list[Document]]:
 
 
 def summarize_plan(
-    docs: list[Document], user_query: str, today: dt.date
+    docs: list[Document], user_query: str, today: dt.date, scope: str
 ) -> tuple[list[BaseMessage] | None, dict, str | None, ChatOllama | None]:
     """Plan an adaptive summary of chronologically-ordered entries.
 
@@ -563,10 +590,12 @@ def summarize_plan(
 
     if total_chars <= SUMMARY_CHAR_BUDGET:
         logger.info("Summarizing %d entries in a single pass", len(docs))
+        scope_line = f"The user's request is about: {scope}.\n" if scope else ""
         system_prompt = (
             "/no_think\n"
             "You are a compassionate personal assistant reviewing the user's diary.\n"
             f"Today's date is {today.isoformat()}.\n"
+            f"{scope_line}"
             "The diary entries below are in CHRONOLOGICAL order. Write a concise, "
             "coherent summary that follows how things developed OVER TIME, citing the "
             "specific dates of notable entries. Use ONLY the provided entries.\n\n"
@@ -613,9 +642,11 @@ def summarize_plan(
             premap[k] += v
 
     combined = "\n\n".join(partials)
+    focus_line = f"Focus: {scope}.\n" if scope else ""
     reduce_input = (
         "/no_think\n"
         f"Today's date is {today.isoformat()}.\n"
+        f"{focus_line}"
         "Below are dated summaries of diary entries, in chronological order. Combine "
         "them into ONE coherent narrative that follows the progression OVER TIME, "
         "citing specific dates. Use ONLY this information.\n\n"
@@ -793,18 +824,19 @@ if st.session_state.vectorstore is not None:
             # the answer itself streams below it.
             with st.status("Understanding your question…") as status:
                 parsed = router.extract(user_query, chat_history)
+                scope = _scope_phrase(parsed)
                 if parsed.mode == "summarize":
                     status.update(label="Gathering matching entries…")
                     docs = router.fetch_all(parsed)
                     status.update(label=f"Summarizing {len(docs)} entries…")
                     messages, premap, canned, gen_llm = summarize_plan(
-                        docs, user_query, today
+                        docs, user_query, today, scope
                     )
                 else:
                     status.update(label="Searching your diary…")
                     docs = router.search(parsed)
                     messages = build_answer_messages(
-                        docs, user_query, chat_history, today
+                        docs, user_query, chat_history, today, scope
                     )
                     premap, canned, gen_llm = {}, None, answer_llm
                 status.update(label="Writing answer…", state="complete")
