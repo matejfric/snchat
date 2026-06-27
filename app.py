@@ -25,11 +25,12 @@ from constants import (
     CONTEXT_WINDOW,
     EMBEDDINGS_MODEL_NAME,
     EXPECTED_SN_VERSION,
+    FETCH_ALL_MAX,
     MODEL_NAME,
     MONTH_MAP,
     PERSIST_DIR,
     SEARCH_K,
-    SUMMARY_CHAR_BUDGET,
+    SINGLE_PASS_BUDGET,
     TAG_ALIASES,
     TOKEN_WARN_RATIO,
 )
@@ -131,16 +132,6 @@ def parse_standard_notes(
 class DiarySearchQuery(BaseModel):
     """Extract search parameters from the user's question about their diary."""
 
-    mode: Literal["search", "summarize"] = Field(
-        default="search",
-        description=(
-            "Use 'summarize' for aggregate questions that ask for an overview, "
-            "recap, trend, or progression across MANY entries (often scoped to a "
-            "tag, e.g. 'summarize my bouldering progression', 'how did my running "
-            "develop?'). Use 'search' for specific point-in-time lookups (e.g. "
-            "'what was I working on in May 2024?')."
-        ),
-    )
     query: str = Field(
         description="The semantic search text to find relevant diary entries"
     )
@@ -151,6 +142,22 @@ class DiarySearchQuery(BaseModel):
         default_factory=list,
         description="All diary tags this question is about (may be several); "
         "empty if none apply",
+    )
+    recent: int | None = Field(
+        default=None,
+        description=(
+            "Number of most-recent entries to fetch. Set ONLY when the user asks for "
+            "a specific count of the LATEST items (e.g. 'last 10 climbing sessions' "
+            "-> 10, 'my last run' -> 1). Leave null otherwise."
+        ),
+    )
+    breadth: Literal["specific", "all"] = Field(
+        default="specific",
+        description=(
+            "'all' when the user wants an overview, summary, recap, trend, or "
+            "progression across the WHOLE filtered scope (e.g. 'summarize my "
+            "bouldering progression'). 'specific' for point lookups (the default)."
+        ),
     )
 
 
@@ -295,13 +302,25 @@ class DiaryQueryRouter:
             if any(alias in q for alias in aliases):
                 matched_tags.append(tag)
 
-        # --- Coarse intent heuristic ---
-        mode: Literal["search", "summarize"] = "search"
+        # --- Coarse intent heuristics ---
+        breadth: Literal["specific", "all"] = "specific"
         if re.search(r"\b(summ|overview|recap|progress|trend|over time|evolv)", q):
-            mode = "summarize"
+            breadth = "all"
+
+        recent: int | None = None
+        if m := re.search(r"\b(?:last|latest|recent|past)\s+(\d{1,3})\b", q):
+            recent = int(m.group(1))
+        elif re.search(r"\bmy\s+last\b", q):
+            recent = 1
 
         return DiarySearchQuery(
-            mode=mode, query=query, year=year, month=month, day=day, tags=matched_tags
+            query=query,
+            year=year,
+            month=month,
+            day=day,
+            tags=matched_tags,
+            recent=recent,
+            breadth=breadth,
         )
 
     def extract(self, query: str, chat_history: list[BaseMessage]) -> DiarySearchQuery:
@@ -338,7 +357,10 @@ class DiaryQueryRouter:
             f"'today last year' means year={today.year - 1}, month={today.month}, "
             f"day={today.day}). Always provide a semantic search query. Only set "
             "date/tag filters when the user explicitly or implicitly refers to a time "
-            f"period or tag.{tags_hint}"
+            "period or tag. Set 'recent' to N only when the user asks for a specific "
+            "number of the latest items ('last 10 climbing sessions' -> 10, 'my last "
+            "run' -> 1). Set 'breadth' to 'all' for overviews/summaries/progressions "
+            f"over the whole scope, else 'specific'.{tags_hint}"
         )
 
         extraction_prompt = ChatPromptTemplate.from_messages(
@@ -366,41 +388,20 @@ class DiaryQueryRouter:
         parsed.tags = [t for t in dict.fromkeys(parsed.tags) if t in allowed]
 
         logger.info(
-            "Routed mode=%s query=%r year=%s month=%s day=%s tags=%s",
-            parsed.mode,
+            "Routed query=%r year=%s month=%s day=%s tags=%s recent=%s breadth=%s",
             parsed.query,
             parsed.year,
             parsed.month,
             parsed.day,
             parsed.tags,
+            parsed.recent,
+            parsed.breadth,
         )
         return parsed
 
-    def search(self, parsed: DiarySearchQuery) -> list[Document]:
-        """Semantic similarity search restricted by the metadata filter."""
-        where_filter = _build_where(parsed.year, parsed.month, parsed.day, parsed.tags)
-        logger.debug("Chroma where filter (search): %s", where_filter)
-
-        kwargs: dict[str, object] = {"k": self.k}
-        if where_filter:
-            kwargs["filter"] = where_filter
-        results = self.vectorstore.similarity_search(parsed.query, **kwargs)
-        logger.info("Retrieved %d documents (search)", len(results))
-        return results
-
-    def fetch_all(self, parsed: DiarySearchQuery) -> list[Document]:
-        """Fetch ALL entries matching the metadata filter (no similarity ranking),
-        sorted chronologically, for aggregate summaries."""
-        where_filter = _build_where(parsed.year, parsed.month, parsed.day, parsed.tags)
-        if where_filter is None:
-            logger.warning(
-                "Summarize query has no tag/date filter; fetching all entries"
-            )
-        logger.debug("Chroma where filter (summarize): %s", where_filter)
-
-        fetched = self.vectorstore.get(
-            where=where_filter, include=["documents", "metadatas"]
-        )
+    @staticmethod
+    def _docs_from_get(fetched: dict) -> list[Document]:
+        """Turn a Chroma .get() result into Documents, sorted chronologically."""
         docs = [
             Document(page_content=content, metadata=meta)
             for content, meta in zip(
@@ -408,10 +409,70 @@ class DiaryQueryRouter:
             )
         ]
         docs.sort(key=lambda d: d.metadata.get("date_str", ""))
-        logger.info(
-            "Fetched %d entries for summary (filter=%s)", len(docs), where_filter
-        )
         return docs
+
+    def retrieve(self, parsed: DiarySearchQuery) -> list[Document]:
+        """Pick a retrieval strategy from the actual DB cardinality (not a brittle
+        upfront mode): most-recent-N, fetch-all, or similarity top-K."""
+        where = _build_where(parsed.year, parsed.month, parsed.day, parsed.tags)
+        logger.debug("Chroma where filter: %s", where)
+
+        # Explicit "most recent N": ask the DB for matching dates, take the N latest.
+        if parsed.recent:
+            meta = self.vectorstore.get(where=where, include=["metadatas"])
+            pairs = sorted(
+                zip(meta["ids"], meta["metadatas"], strict=True),
+                key=lambda p: p[1].get("date_str", ""),
+                reverse=True,
+            )
+            top_ids = [i for i, _ in pairs[: parsed.recent]]
+            if not top_ids:
+                return []
+            fetched = self.vectorstore.get(
+                ids=top_ids, include=["documents", "metadatas"]
+            )
+            docs = self._docs_from_get(fetched)  # re-sorted chronologically
+            logger.info(
+                "retrieve: most-recent-%d -> %d entries", parsed.recent, len(docs)
+            )
+            return docs
+
+        # No filter at all: can't enumerate the whole diary -> semantic search only.
+        if where is None:
+            results = self.vectorstore.similarity_search(parsed.query, k=self.k)
+            logger.info(
+                "retrieve: no filter, similarity k=%d -> %d", self.k, len(results)
+            )
+            return results
+
+        # Filtered: the real match count decides breadth.
+        count = len(self.vectorstore.get(where=where, include=[])["ids"])
+        if count == 0:
+            logger.info("retrieve: 0 matches for filter")
+            return []
+        if count <= FETCH_ALL_MAX or parsed.breadth == "all":
+            fetched = self.vectorstore.get(
+                where=where, include=["documents", "metadatas"]
+            )
+            docs = self._docs_from_get(fetched)
+            logger.info(
+                "retrieve: fetch-all %d entries (count=%d, breadth=%s)",
+                len(docs),
+                count,
+                parsed.breadth,
+            )
+            return docs
+        results = self.vectorstore.similarity_search(
+            parsed.query, k=self.k, filter=where
+        )
+        logger.info(
+            "retrieve: count=%d > %d & breadth=specific -> similarity k=%d -> %d",
+            count,
+            FETCH_ALL_MAX,
+            self.k,
+            len(results),
+        )
+        return results
 
 
 # --- Answer generation ---
@@ -499,47 +560,6 @@ def _scope_phrase(parsed: DiarySearchQuery) -> str:
     return " ".join(p for p in (topic, when) if p)
 
 
-def build_answer_messages(
-    docs: list[Document],
-    user_query: str,
-    chat_history: list[BaseMessage],
-    today: dt.date,
-    scope: str,
-) -> list[BaseMessage]:
-    """Build the chat messages for a point-lookup answer (system + history + human),
-    with the retrieved entries stuffed into the context. `scope` anchors the answer on
-    the actually-retrieved topic/period so prior turns can't pull it off-target."""
-    anchor = (
-        f"The user's current request is about: {scope}.\n"
-        "The conversation history may mention other time periods or topics — answer "
-        "the CURRENT request only. The diary excerpts below have ALREADY been filtered "
-        "to match it; treat them as the complete set for this question.\n"
-        if scope
-        else "Answer the user's question using ONLY the diary excerpts below.\n"
-    )
-    system_prompt = (
-        "/no_think\n"
-        "You are a compassionate personal assistant helping the user "
-        "review their diary.\n"
-        f"Today's date is {today.isoformat()}.\n"
-        f"{anchor}"
-        "Always reference the specific date(s) of the entries you are citing.\n"
-        "If there are no excerpts below, say honestly that you have no entries for "
-        "that.\n\n"
-        "Context:\n{context}"
-    )
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", system_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-        ]
-    )
-    return prompt.format_messages(
-        context=_format_context(docs), chat_history=chat_history, input=user_query
-    )
-
-
 def _batch_by_chars(docs: list[Document], budget: int) -> list[list[Document]]:
     """Group consecutive (chronological) docs into batches under a char budget."""
     batches: list[list[Document]] = []
@@ -557,18 +577,24 @@ def _batch_by_chars(docs: list[Document], budget: int) -> list[list[Document]]:
     return batches
 
 
-def summarize_plan(
-    docs: list[Document], user_query: str, today: dt.date, scope: str
-) -> tuple[list[BaseMessage] | None, dict, str | None, ChatOllama | None]:
-    """Plan an adaptive summary of chronologically-ordered entries.
+def plan_generation(
+    docs: list[Document],
+    user_query: str,
+    chat_history: list[BaseMessage],
+    today: dt.date,
+    scope: str,
+    gen_llm: ChatOllama,
+) -> tuple[list[BaseMessage] | None, dict, str | None]:
+    """Plan size-adaptive generation over the retrieved (chronological) entries.
 
-    Returns (messages_to_stream, premap_usage, canned_answer, llm):
-    - empty docs  -> (None, {}, "couldn't find…", None)
-    - single pass -> (messages, {}, None, llm)            entries fit one window
-    - map-reduce  -> (reduce_messages, premap_usage, None, llm)  map steps already run
+    Returns (messages_to_stream, premap_usage, canned_answer):
+    - empty docs   -> (None, {}, "couldn't find…")
+    - fits budget  -> (messages, {}, None)            single streamed pass (+ history)
+    - too large    -> (reduce_messages, premap_usage, None)  map steps already run
 
-    The handler streams `messages` with `llm`; `premap_usage` carries the token usage
-    of the non-streamed map calls so the final metrics cover the whole job.
+    `premap_usage` carries the token usage of the non-streamed map calls so the final
+    metrics cover the whole job. `scope` anchors the answer on the actually-retrieved
+    topic/period so prior turns can't pull it off-target.
     """
     if not docs:
         return (
@@ -576,38 +602,45 @@ def summarize_plan(
             {},
             "I couldn't find any diary entries matching that. "
             "Try a different tag or time period.",
-            None,
         )
 
-    summarize_llm = ChatOllama(
-        model=MODEL_NAME,
-        temperature=0.3,
-        num_ctx=16384,
-        num_predict=2048,
-        reasoning=False,
-    )
     total_chars = sum(len(d.page_content) for d in docs)
 
-    if total_chars <= SUMMARY_CHAR_BUDGET:
-        logger.info("Summarizing %d entries in a single pass", len(docs))
-        scope_line = f"The user's request is about: {scope}.\n" if scope else ""
+    if total_chars <= SINGLE_PASS_BUDGET:
+        logger.info("Generating from %d entries in a single pass", len(docs))
+        anchor = (
+            f"The user's current request is about: {scope}.\n"
+            "The conversation history may mention other periods or topics — answer the "
+            "CURRENT request only. The diary excerpts below have ALREADY been filtered "
+            "to match it; treat them as the complete set for this question.\n"
+            if scope
+            else "Answer the user's question using ONLY the diary excerpts below.\n"
+        )
         system_prompt = (
             "/no_think\n"
-            "You are a compassionate personal assistant reviewing the user's diary.\n"
+            "You are a compassionate personal assistant helping the user review their "
+            "diary.\n"
             f"Today's date is {today.isoformat()}.\n"
-            f"{scope_line}"
-            "The diary entries below are in CHRONOLOGICAL order. Write a concise, "
-            "coherent summary that follows how things developed OVER TIME, citing the "
-            "specific dates of notable entries. Use ONLY the provided entries.\n\n"
-            "Entries (chronological):\n{context}"
+            f"{anchor}"
+            "The entries are in CHRONOLOGICAL order. Answer the question directly; if "
+            "the user asked for an overview, summary, recap, or progression, give a "
+            "concise chronological summary instead. Either way, cite the specific "
+            "date(s) you use.\n"
+            "If there are no excerpts below, say honestly that you have no entries for "
+            "that.\n\n"
+            "Context:\n{context}"
         )
         prompt = ChatPromptTemplate.from_messages(
-            [("system", system_prompt), ("human", "{input}")]
+            [
+                ("system", system_prompt),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}"),
+            ]
         )
         messages = prompt.format_messages(
-            context=_format_context(docs), input=user_query
+            context=_format_context(docs), chat_history=chat_history, input=user_query
         )
-        return messages, {}, None, summarize_llm
+        return messages, {}, None
 
     # Too much text for one context window: summarize chronological batches (map),
     # then stream a single narrative that combines the dated batch-summaries (reduce).
@@ -618,9 +651,9 @@ def summarize_plan(
         )
         for d in docs
     ]
-    batches = _batch_by_chars(dated_docs, SUMMARY_CHAR_BUDGET)
+    batches = _batch_by_chars(dated_docs, SINGLE_PASS_BUDGET)
     logger.info(
-        "Summarizing %d entries (%d chars) via map-reduce in %d batches",
+        "Generating from %d entries (%d chars) via map-reduce in %d batches",
         len(docs),
         total_chars,
         len(batches),
@@ -636,7 +669,7 @@ def summarize_plan(
             "as a few concise bullet points, keeping the [YYYY-MM-DD] date next to "
             f"each point.\n\n{joined}\n\nDated summary:"
         )
-        resp = summarize_llm.invoke(map_input)
+        resp = gen_llm.invoke(map_input)
         partials.append(resp.content)
         for k, v in _usage_of(resp).items():
             premap[k] += v
@@ -652,7 +685,7 @@ def summarize_plan(
         "citing specific dates. Use ONLY this information.\n\n"
         f"User's question: {user_query}\n\n{combined}\n\nProgression summary:"
     )
-    return [HumanMessage(reduce_input)], premap, None, summarize_llm
+    return [HumanMessage(reduce_input)], premap, None
 
 
 # --- Streamlit UI ---
@@ -798,11 +831,11 @@ if st.session_state.vectorstore is not None:
         logger.info("User query: %s", user_query)
 
         today = dt.date.today()
-        answer_llm = ChatOllama(
+        gen_llm = ChatOllama(
             model=MODEL_NAME,
             temperature=0.3,
             verbose=True,
-            num_ctx=8192,
+            num_ctx=16384,
             num_predict=2048,
             reasoning=False,
         )
@@ -825,23 +858,32 @@ if st.session_state.vectorstore is not None:
             with st.status("Understanding your question…") as status:
                 parsed = router.extract(user_query, chat_history)
                 scope = _scope_phrase(parsed)
-                if parsed.mode == "summarize":
-                    status.update(label="Gathering matching entries…")
-                    docs = router.fetch_all(parsed)
-                    status.update(label=f"Summarizing {len(docs)} entries…")
-                    messages, premap, canned, gen_llm = summarize_plan(
-                        docs, user_query, today, scope
-                    )
-                else:
-                    status.update(label="Searching your diary…")
-                    docs = router.search(parsed)
-                    messages = build_answer_messages(
-                        docs, user_query, chat_history, today, scope
-                    )
-                    premap, canned, gen_llm = {}, None, answer_llm
+                status.update(label="Searching your diary…")
+                docs = router.retrieve(parsed)
+                status.update(label=f"Reviewing {len(docs)} entries…")
+                messages, premap, canned = plan_generation(
+                    docs, user_query, chat_history, today, scope, gen_llm
+                )
                 status.update(label="Writing answer…", state="complete")
 
-            logger.info("Answered using %d entries (mode=%s)", len(docs), parsed.mode)
+            # A whole-diary overview can't be enumerated into one prompt; flag the
+            # fallback to similarity search so the user can narrow the scope.
+            if (
+                parsed.breadth == "all"
+                and not parsed.recent
+                and not (parsed.tags or parsed.year or parsed.month or parsed.day)
+            ):
+                st.caption(
+                    "Tip: add a tag or time period for a full overview — showing the "
+                    "most relevant entries instead."
+                )
+
+            logger.info(
+                "Answered using %d entries (recent=%s breadth=%s)",
+                len(docs),
+                parsed.recent,
+                parsed.breadth,
+            )
 
             usage = dict(premap) if premap else {}
             if canned is not None:
