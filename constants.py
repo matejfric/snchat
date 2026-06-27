@@ -21,13 +21,13 @@ TAG_ALIASES: dict[str, list[str]] = {
     "diplomka": ["thesis", "master's thesis", "diplomová práce"],
     "státnice": ["state exams", "final exams", "státní zkoušky"],
     "cvičení": ["exercise", "workout"],
-    "fitko": ["gym", "weights", "posilovna", "fitness"],
-    "lyže": ["skiing", "ski", "downhill skiing", "lyžování", "sjezdovky"],
+    "fitko": ["gym", "weights", "posilovna", "fitness", "workout"],
+    "lyže": ["skiing", "ski", "downhill skiing", "lyžování"],
     "skialp": ["skiing", "ski touring", "ski mountaineering", "skialpinismus"],
     "mtb": ["mountain biking", "biking", "cycling", "horské kolo", "kolo"],
-    "turistika": ["hiking", "trekking", "túra", "výlet"],
-    "lezení": ["climbing", "bouldering"],
-    "koloběžka": ["scooter", "kick scooter"],
+    "turistika": ["hiking", "trekking", "túra"],
+    "lezení": ["climbing", "bouldering", "via ferrata"],
+    "koloběžka": ["push bike"],
 }
 
 MONTH_MAP: dict[str, int] = {
