@@ -26,9 +26,11 @@ from constants import (
     EMBEDDINGS_MODEL_NAME,
     EXPECTED_SN_VERSION,
     MODEL_NAME,
+    MONTH_MAP,
     PERSIST_DIR,
     SEARCH_K,
     SUMMARY_CHAR_BUDGET,
+    TAG_ALIASES,
     TOKEN_WARN_RATIO,
 )
 
@@ -145,13 +147,20 @@ class DiarySearchQuery(BaseModel):
     year: int | None = Field(default=None, description="Filter by year (e.g. 2024)")
     month: int | None = Field(default=None, description="Filter by month (1-12)")
     day: int | None = Field(default=None, description="Filter by day of month (1-31)")
-    tags: str | None = Field(default=None, description="Filter by tag keyword")
+    tags: list[str] = Field(
+        default_factory=list,
+        description="All diary tags this question is about (may be several); "
+        "empty if none apply",
+    )
 
 
 def _build_where(
-    year: int | None, month: int | None, day: int | None, tags: str | None
+    year: int | None, month: int | None, day: int | None, tags: list[str]
 ) -> dict | None:
-    """Build a Chroma metadata `where` filter from extracted query parameters."""
+    """Build a Chroma metadata `where` filter from extracted query parameters.
+
+    Tags are OR-ed (an entry matches if its tag list contains ANY of them);
+    `$and`/`$or` need >=2 children, so single conditions are emitted bare."""
     conditions: list[dict] = []
     if year is not None:
         conditions.append({"year": {"$eq": year}})
@@ -159,9 +168,13 @@ def _build_where(
         conditions.append({"month": {"$eq": month}})
     if day is not None:
         conditions.append({"day": {"$eq": day}})
-    if tags is not None:
-        # `tags` is stored as a list; $contains tests list membership.
-        conditions.append({"tags": {"$contains": tags}})
+
+    # `tags` is stored as a list; $contains tests list membership.
+    tag_conds = [{"tags": {"$contains": t}} for t in tags]
+    if len(tag_conds) == 1:
+        conditions.append(tag_conds[0])
+    elif len(tag_conds) >= 2:
+        conditions.append({"$or": tag_conds})
 
     if not conditions:
         return None
@@ -174,33 +187,6 @@ class DiaryQueryRouter:
     """Turns a natural-language question into structured query parameters (mode +
     filters), then retrieves diary entries either by semantic search (point lookups)
     or by a full metadata fetch (aggregate summaries)."""
-
-    _MONTH_MAP: dict[str, int] = {
-        "january": 1,
-        "jan": 1,
-        "february": 2,
-        "feb": 2,
-        "march": 3,
-        "mar": 3,
-        "april": 4,
-        "apr": 4,
-        "may": 5,
-        "june": 6,
-        "jun": 6,
-        "july": 7,
-        "jul": 7,
-        "august": 8,
-        "aug": 8,
-        "september": 9,
-        "sep": 9,
-        "sept": 9,
-        "october": 10,
-        "oct": 10,
-        "november": 11,
-        "nov": 11,
-        "december": 12,
-        "dec": 12,
-    }
 
     def __init__(
         self,
@@ -253,10 +239,10 @@ class DiaryQueryRouter:
             day = int(iso_match.group(3))
 
         # --- Month name + year: "may 2025", "in january 2024" ---
-        month_names_pattern = "|".join(self._MONTH_MAP.keys())
+        month_names_pattern = "|".join(MONTH_MAP.keys())
         month_year_match = re.search(rf"\b({month_names_pattern})\s+(\d{{4}})\b", q)
         if month_year_match:
-            month = self._MONTH_MAP[month_year_match.group(1)]
+            month = MONTH_MAP[month_year_match.group(1)]
             year = int(month_year_match.group(2))
 
         # --- Year + month name: "2025 may" (less common but possible) ---
@@ -264,13 +250,13 @@ class DiaryQueryRouter:
             year_month_match = re.search(rf"\b(\d{{4}})\s+({month_names_pattern})\b", q)
             if year_month_match:
                 year = int(year_month_match.group(1))
-                month = self._MONTH_MAP[year_month_match.group(2)]
+                month = MONTH_MAP[year_month_match.group(2)]
 
         # --- Standalone month name without year: "in march", "during june" ---
         if month is None:
             standalone_month = re.search(rf"\b({month_names_pattern})\b", q)
             if standalone_month:
-                month = self._MONTH_MAP[standalone_month.group(1)]
+                month = MONTH_MAP[standalone_month.group(1)]
 
         # --- "Month day, year" or "Month day year": "May 18, 2025" ---
         if day is None:
@@ -279,7 +265,7 @@ class DiaryQueryRouter:
                 q,
             )
             if mdy_match:
-                month = self._MONTH_MAP[mdy_match.group(1)]
+                month = MONTH_MAP[mdy_match.group(1)]
                 day = int(mdy_match.group(2))
                 year = int(mdy_match.group(3))
 
@@ -291,7 +277,7 @@ class DiaryQueryRouter:
             )
             if dom_match:
                 day = int(dom_match.group(1))
-                month = self._MONTH_MAP[dom_match.group(2)]
+                month = MONTH_MAP[dom_match.group(2)]
                 if dom_match.group(3):
                     year = int(dom_match.group(3))
 
@@ -301,21 +287,13 @@ class DiaryQueryRouter:
             if year_match:
                 year = int(year_match.group(1))
 
-        # --- Tag matching: fuzzy match against available tags ---
-        matched_tag: str | None = None
-        if self.available_tags:
-            q_words = set(q.split())
-            for tag in self.available_tags:
-                tag_lower = tag.lower()
-                # Exact substring match in query
-                if tag_lower in q:
-                    matched_tag = tag
-                    break
-                # Match if all words of the tag appear in the query
-                tag_words = set(tag_lower.split())
-                if tag_words and tag_words.issubset(q_words):
-                    matched_tag = tag
-                    break
+        # --- Tag matching: match query against each tag's name + multilingual
+        # aliases; a query word like "skiing" can select several tags (lyže, skialp).
+        matched_tags: list[str] = []
+        for tag in self.available_tags:
+            aliases = [tag.lower(), *(a.lower() for a in TAG_ALIASES.get(tag, []))]
+            if any(alias in q for alias in aliases):
+                matched_tags.append(tag)
 
         # --- Coarse intent heuristic ---
         mode: Literal["search", "summarize"] = "search"
@@ -323,7 +301,7 @@ class DiaryQueryRouter:
             mode = "summarize"
 
         return DiarySearchQuery(
-            mode=mode, query=query, year=year, month=month, day=day, tags=matched_tag
+            mode=mode, query=query, year=year, month=month, day=day, tags=matched_tags
         )
 
     def extract(self, query: str, chat_history: list[BaseMessage]) -> DiarySearchQuery:
@@ -335,9 +313,18 @@ class DiaryQueryRouter:
 
         tags_hint = ""
         if self.available_tags:
+            lines = [
+                f"- {tag}: {', '.join(TAG_ALIASES[tag])}"
+                if TAG_ALIASES.get(tag)
+                else f"- {tag}"
+                for tag in self.available_tags
+            ]
             tags_hint = (
-                f" Available tags in the diary: {', '.join(self.available_tags)}."
-                f" Only use one of these exact tag values for the 'tags' filter."
+                "\n\nThe diary uses these fixed tags (with example synonyms in "
+                "Czech/English). Map the user's topic — in ANY language — to ALL "
+                "matching tags. A broad term may match SEVERAL (e.g. 'skiing' -> "
+                "lyže and skialp). Use only exact tag values from this list; leave "
+                "tags empty if none clearly apply.\n" + "\n".join(lines)
             )
 
         system_msg = (
@@ -373,6 +360,10 @@ class DiaryQueryRouter:
 
         if not parsed.query or not parsed.query.strip():
             parsed.query = query
+
+        # Keep only real tags (drop hallucinated values), de-duplicated in order.
+        allowed = set(self.available_tags)
+        parsed.tags = [t for t in dict.fromkeys(parsed.tags) if t in allowed]
 
         logger.info(
             "Routed mode=%s query=%r year=%s month=%s day=%s tags=%s",

@@ -8,3 +8,49 @@ CONTEXT_WINDOW = 8192  # answer LLM's num_ctx; denominator for the context gauge
 SUMMARY_CHAR_BUDGET = 45000
 SEARCH_K = 10  # entries to retrieve for a point lookup (entries are tiny)
 PERSIST_DIR = "./diary_vector_db"  # where to write the vector DB
+
+# Multilingual synonyms for the fixed Czech diary tags. Fed to the extraction LLM
+# (so e.g. "skiing" maps to lyže + skialp) and used by the regex fallback. A term
+# listed under several tags (e.g. "skiing") selects all of them. Verify/extend as
+# tags change; tags not listed here still work, just without cross-lingual hints.
+TAG_ALIASES: dict[str, list[str]] = {
+    "běh": ["running", "run", "běhání"],
+    "plavání": ["swimming", "swim"],
+    "diplomka": ["thesis", "master's thesis", "diplomová práce"],
+    "státnice": ["state exams", "final exams", "státní zkoušky"],
+    "cvičení": ["exercise", "workout"],
+    "fitko": ["gym", "weights", "posilovna", "fitness"],
+    "lyže": ["skiing", "ski", "downhill skiing", "lyžování", "sjezdovky"],
+    "skialp": ["skiing", "ski touring", "ski mountaineering", "skialpinismus"],
+    "mtb": ["mountain biking", "biking", "cycling", "horské kolo", "kolo"],
+    "turistika": ["hiking", "trekking", "túra", "výlet"],
+    "lezení": ["climbing", "bouldering"],
+    "koloběžka": ["scooter", "kick scooter"],
+}
+
+MONTH_MAP: dict[str, int] = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
