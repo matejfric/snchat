@@ -9,6 +9,10 @@ SINGLE_PASS_BUDGET = 45000
 # Filtered scopes with at most this many entries are fetched in FULL (no top-K cap).
 FETCH_ALL_MAX = 50
 SEARCH_K = 10  # entries to retrieve for a point lookup (entries are tiny)
+# Min rapidfuzz partial_ratio (0-100) for a keyword/entity match. Fuzzy (not exact) so
+# it survives Czech declension + casing; verbatim mentions score 100. Tune if it
+# over/under-matches on real entries.
+FUZZY_MATCH_THRESHOLD = 80
 PERSIST_DIR = "./diary_vector_db"  # where to write the vector DB
 
 # Multilingual synonyms for the fixed Czech diary tags. Fed to the extraction LLM

@@ -16,15 +16,18 @@ addressed. All code lives in `app.py` unless noted; config in `constants.py`.
   - [2.3. Brittle binary `mode` under-retrieved](#23-brittle-binary-mode-under-retrieved)
   - [2.4. "Last N sessions" processed the whole tag](#24-last-n-sessions-processed-the-whole-tag)
   - [2.5. Whole-diary overview isn't enumerable](#25-whole-diary-overview-isnt-enumerable)
+  - [2.6. Scattered entity mentions exceeded top-K](#26-scattered-entity-mentions-exceeded-top-k)
 - [3. Generation \& conversation](#3-generation--conversation)
   - [3.1. Cross-turn answer confusion (follow-ups drift to the wrong scope)](#31-cross-turn-answer-confusion-follow-ups-drift-to-the-wrong-scope)
   - [3.2. Oversized context silently truncated](#32-oversized-context-silently-truncated)
   - [3.3. Extraction LLM truncated chat history](#33-extraction-llm-truncated-chat-history)
+  - [3.4. Map-reduce dropped tags from the context](#34-map-reduce-dropped-tags-from-the-context)
 - [4. Offline / library constraints](#4-offline--library-constraints)
   - [4.1. `get_num_tokens` breaks the offline guarantee](#41-get_num_tokens-breaks-the-offline-guarantee)
   - [4.2. Streaming dropped token metrics](#42-streaming-dropped-token-metrics)
   - [4.3. Conversation can outgrow the context window unnoticed](#43-conversation-can-outgrow-the-context-window-unnoticed)
 - [5. Data contract (violations skip data silently)](#5-data-contract-violations-skip-data-silently)
+- [6. Example prompts (regression reference)](#6-example-prompts-regression-reference)
 
 ## 1. Ingestion & vector store
 
@@ -96,6 +99,34 @@ addressed. All code lives in `app.py` unless noted; config in `constants.py`.
 - **Fix (deliberate limitation):** with no filter, `retrieve()` falls back to similarity
   top-K and the UI shows a one-line caption suggesting the user add a tag or period.
 
+### 2.6. Scattered entity mentions exceeded top-K
+
+- **Symptom:** "what were my impressions of Game of Thrones?" returned an incomplete
+  answer — a named entity (a TV series, book, film, person) is mentioned across many
+  days, **more than `SEARCH_K`**, so similarity top-K only saw a slice; embeddings also
+  smear over proper nouns/acronyms, so even the top-K were not the most on-topic.
+- **Cause:** retrieval was purely **semantic**; there was no keyword/lexical path. Exact
+  substring matching wouldn't fix it either — Czech is heavily inflected (`Hra o trůny`
+  → `ve Hře o trůny`) and people abbreviate (GoT ↔ Game of Thrones).
+- **Fix:** the extraction LLM expands a named entity into a `keywords` list of surface
+  forms (abbreviation + full name + Czech/English variants). When `keywords` are set,
+  `retrieve()` takes a **lexical branch** (`_fuzzy_retrieve()`): fetch the full
+  (optionally date/tag-filtered) set and keep **every** entry matching any candidate via
+  `_keyword_hit()` — a **whole-word** match for short acronyms ("GoT"; `WRatio`
+  under-scores them and a bare substring test false-matches "forgot"), else rapidfuzz
+  `partial_ratio ≥ FUZZY_MATCH_THRESHOLD` (best-matching window: a verbatim mention
+  scores 100 regardless of entry length, and declension still scores high). The full
+  match set then flows into the existing fetch-all → map-reduce generation; `recent`
+  trims to the N latest. Covered by `tests/test_keyword_hit.py`.
+- **Gotcha — don't use `WRatio` here:** it was the first choice and silently broke on
+  real entries. `WRatio` scales partial matches down to 0.6 once the entry is >~8x
+  longer than the query, so a **verbatim** "Campfire Cooking" in a normal diary
+  paragraph scored ~60 and fell below the threshold → 0 results. Synthetic tests with
+  short entries (length ratio <8) didn't catch it; the long-entry regression test now
+  does. `_fuzzy_retrieve()` also logs `scanned`/`matched`/`best_score` so a 0-result is
+  diagnosable (a high `best_score` below the threshold points straight at this class of
+  bug).
+
 ## 3. Generation & conversation
 
 ### 3.1. Cross-turn answer confusion (follow-ups drift to the wrong scope)
@@ -125,6 +156,19 @@ addressed. All code lives in `app.py` unless noted; config in `constants.py`.
   dropped history.
 - **Fix:** set `query_llm` `num_ctx=8192`.
 
+### 3.4. Map-reduce dropped tags from the context
+
+- **Symptom:** large scopes that fell to **map-reduce** generation summarized entries
+  without their tags, while the single-pass path included them — the LLM saw different
+  information depending on the (size-driven) path.
+- **Cause:** single-pass renders each entry via `DOCUMENT_PROMPT` (`Date:` / `Tags:` /
+  `Content:`), but the map-reduce path built its own per-entry string with only a
+  `[YYYY-MM-DD]` date prefix and **no tags**.
+- **Fix:** both paths now render tags through a shared `_tags_str()` helper (`—` when
+  untagged), so they can't drift apart again. The map-reduce prefix is
+  `[YYYY-MM-DD] (tags: …) <content>`, and the map prompt keeps tags next to each point
+  so they survive into the reduce step.
+
 ## 4. Offline / library constraints
 
 ### 4.1. `get_num_tokens` breaks the offline guarantee
@@ -152,3 +196,57 @@ addressed. All code lives in `app.py` unless noted; config in `constants.py`.
 - Each note's **title must begin with an ISO date** (`yyyy-mm-dd`); notes whose title
   doesn't parse as a date are **silently skipped**. All date sorting/filtering derives
   from this prefix.
+
+## 6. Example prompts (regression reference)
+
+Prompts the app should handle, grouped by the behavior they exercise, with the expected
+routing/retrieval. Use as a manual checklist after touching the router, `retrieve()`, or
+generation; each group cross-references the failure mode above.
+
+> **Not yet automated.** Asserting on *answers* (not just routing) needs a representative
+> diary fixture — a mock diary or an open, unlicensed diary dataset — which is
+> **deferred**. Today only `_keyword_hit` is unit-tested (`tests/test_keyword_hit.py`).
+> The entity/topic prompts below assume the diary actually contains those mentions;
+> substitute ones present in your backup. Tags shown are the fixed Czech tags from
+> `constants.TAG_ALIASES`.
+
+### 6.1. Multilingual tag mapping (→ 2.1)
+
+- "summarize my skiing" → tags `lyže` **+** `skialp`, `breadth=all`.
+- "how is my climbing going?" → tag `lezení`, `breadth=all`.
+- "kolik jsem toho naběhal?" → tag `běh` (Czech question, Czech tag).
+
+### 6.2. Broad scope returns ALL matching entries (→ 2.3, 2.5)
+
+- "what did I do skiing in January?" → tags `lyže`+`skialp` **and** `month=1`; fetches
+  **every** match, not top-K.
+- "summarize my whole diary" → no filter → similarity top-K **plus** the UI caption
+  suggesting a tag/period (deliberate limitation, not a bug).
+
+### 6.3. Recent-N, dates-first (→ 2.4)
+
+- "summarize my last 10 climbing sessions" → `recent=10`, tag `lezení`, newest 10 by date.
+- "my last run" → `recent=1`, tag `běh`.
+
+### 6.4. Dates, relative dates & point lookups (→ 3.1, §5)
+
+- "what did I do on 2025-05-18?" → exact `year`/`month`/`day`.
+- "what was I up to today last year?" → `year`=today−1, plus today's `month`/`day`.
+- **Follow-up scope:** ask "how was skiing in 2025?", then "and in 2026?" → the second
+  answer must be framed as **2026** (not drift back to 2025); anchored by `_scope_phrase`.
+
+### 6.5. Keyword / named-entity lexical lookup (→ 2.6)
+
+- "what were my impressions of Game of Thrones?" → `keywords` ≈ `[GoT, Game of Thrones,
+  Hra o trůny]`; fuzzy-fetches **all** mentions across dates, including Czech-declined.
+- "did I enjoy watching GoT?" → abbreviation expands to full forms; the short token "got"
+  matches as a whole word (and must **not** match inside "forgot").
+- "what did I think of <a book/film/person in the diary>?" → keyword expansion finds
+  scattered mentions a top-K similarity search would miss.
+- **Negative control:** "when did I feel anxious?" → thematic, no named entity →
+  `keywords` stays **empty** → must route to the semantic/other path, not the lexical one.
+
+### 6.6. Conversation window (→ 4.3)
+
+- A long multi-turn chat → sidebar context gauge warns past `TOKEN_WARN_RATIO`; **New
+  chat** resets `st.session_state.messages`.

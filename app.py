@@ -19,6 +19,7 @@ from langchain_core.prompts import (
 )
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from pydantic import BaseModel, Field
+from rapidfuzz import fuzz
 import streamlit as st
 
 from constants import (
@@ -26,6 +27,7 @@ from constants import (
     EMBEDDINGS_MODEL_NAME,
     EXPECTED_SN_VERSION,
     FETCH_ALL_MAX,
+    FUZZY_MATCH_THRESHOLD,
     MODEL_NAME,
     MONTH_MAP,
     PERSIST_DIR,
@@ -143,6 +145,17 @@ class DiarySearchQuery(BaseModel):
         description="All diary tags this question is about (may be several); "
         "empty if none apply",
     )
+    keywords: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Distinctive named entities to look up by keyword — a TV series, film, "
+            "book, person, or place the question is about (NOT a theme or mood). "
+            "Include the user's term AND its likely written variants: expand "
+            "abbreviations and add Czech + English forms (e.g. 'GoT' -> ['GoT', "
+            "'Game of Thrones', 'Hra o trůny']). Leave empty for thematic or mood "
+            "questions with no specific named entity."
+        ),
+    )
     recent: int | None = Field(
         default=None,
         description=(
@@ -188,6 +201,27 @@ def _build_where(
     if len(conditions) == 1:
         return conditions[0]
     return {"$and": conditions}
+
+
+def _keyword_score(candidate: str, haystack: str) -> float:
+    """Match score (0-100) of a lowercased keyword candidate against lowercased text.
+
+    Short single tokens (acronyms like 'got') are a binary whole-word match: a substring
+    test false-positives ('got' in 'forgot') and fuzzy scorers mis-rank 3-char strings.
+    Longer / multi-word forms use rapidfuzz `partial_ratio`, which scores the best-
+    matching window — so a verbatim mention scores 100 regardless of entry length and
+    Czech declension still scores high (e.g. 'hra o trůny' -> 'Hře o trůny'). NOT
+    `WRatio`: it scales partial matches down to 0.6 once the entry is >~8x longer than
+    the query, so a verbatim hit in a normal diary paragraph collapsed to ~60 and was
+    dropped below the threshold."""
+    if len(candidate) <= 4 and " " not in candidate:
+        return 100.0 if re.search(rf"\b{re.escape(candidate)}\b", haystack) else 0.0
+    return fuzz.partial_ratio(candidate, haystack)
+
+
+def _keyword_hit(candidate: str, haystack: str) -> bool:
+    """Whether a keyword candidate's match score clears the threshold."""
+    return _keyword_score(candidate, haystack) >= FUZZY_MATCH_THRESHOLD
 
 
 class DiaryQueryRouter:
@@ -360,7 +394,11 @@ class DiaryQueryRouter:
             "period or tag. Set 'recent' to N only when the user asks for a specific "
             "number of the latest items ('last 10 climbing sessions' -> 10, 'my last "
             "run' -> 1). Set 'breadth' to 'all' for overviews/summaries/progressions "
-            f"over the whole scope, else 'specific'.{tags_hint}"
+            "over the whole scope, else 'specific'. Set 'keywords' ONLY when the "
+            "question is about a specific named entity (a TV series, film, book, "
+            "person, place) whose mentions are scattered through the diary — list the "
+            "user's term plus likely written variants (expand abbreviations, add the "
+            f"Czech and English forms); leave empty otherwise.{tags_hint}"
         )
 
         extraction_prompt = ChatPromptTemplate.from_messages(
@@ -388,12 +426,14 @@ class DiaryQueryRouter:
         parsed.tags = [t for t in dict.fromkeys(parsed.tags) if t in allowed]
 
         logger.info(
-            "Routed query=%r year=%s month=%s day=%s tags=%s recent=%s breadth=%s",
+            "Routed query=%r year=%s month=%s day=%s tags=%s keywords=%s recent=%s "
+            "breadth=%s",
             parsed.query,
             parsed.year,
             parsed.month,
             parsed.day,
             parsed.tags,
+            parsed.keywords,
             parsed.recent,
             parsed.breadth,
         )
@@ -411,11 +451,53 @@ class DiaryQueryRouter:
         docs.sort(key=lambda d: d.metadata.get("date_str", ""))
         return docs
 
+    def _fuzzy_retrieve(
+        self, parsed: DiarySearchQuery, where: dict | None
+    ) -> list[Document]:
+        """Find entries mentioning a named entity by matching the LLM-expanded surface
+        forms against the stored text (see `_keyword_score`). Returns EVERY matching
+        entry — the point is to catch all scattered mentions that semantic top-K would
+        miss; `recent` then trims to the N latest if the user asked for a count."""
+        fetched = self.vectorstore.get(where=where, include=["documents", "metadatas"])
+        candidates = [k.lower() for k in parsed.keywords if k.strip()]
+        docs: list[Document] = []
+        best = 0.0  # highest score seen, so a 0-match result is explainable in the log
+        for content, meta in zip(
+            fetched["documents"], fetched["metadatas"], strict=True
+        ):
+            haystack = content.lower()
+            score = max((_keyword_score(c, haystack) for c in candidates), default=0.0)
+            best = max(best, score)
+            if score >= FUZZY_MATCH_THRESHOLD:
+                docs.append(Document(page_content=content, metadata=meta))
+        docs.sort(key=lambda d: d.metadata.get("date_str", ""))
+        matched = len(docs)
+        if parsed.recent:
+            docs = docs[-parsed.recent :]
+        logger.info(
+            "retrieve: fuzzy keywords=%s scanned=%d matched=%d best_score=%.0f "
+            "(threshold=%d, recent=%s)",
+            parsed.keywords,
+            len(fetched["documents"]),
+            matched,
+            best,
+            FUZZY_MATCH_THRESHOLD,
+            parsed.recent,
+        )
+        return docs
+
     def retrieve(self, parsed: DiarySearchQuery) -> list[Document]:
         """Pick a retrieval strategy from the actual DB cardinality (not a brittle
-        upfront mode): most-recent-N, fetch-all, or similarity top-K."""
+        upfront mode): keyword/entity fuzzy match, most-recent-N, fetch-all, or
+        similarity top-K."""
         where = _build_where(parsed.year, parsed.month, parsed.day, parsed.tags)
         logger.debug("Chroma where filter: %s", where)
+
+        # Keyword/entity lookup: mentions of a named entity (a series, book, place) are
+        # scattered across entries that semantic top-K misses, so fuzzy-match the
+        # expanded surface forms over the full (optionally date/tag-filtered) text.
+        if parsed.keywords:
+            return self._fuzzy_retrieve(parsed, where)
 
         # Explicit "most recent N": ask the DB for matching dates, take the N latest.
         if parsed.recent:
@@ -481,16 +563,22 @@ DOCUMENT_PROMPT = PromptTemplate.from_template(
 )
 
 
+def _tags_str(metadata: dict) -> str:
+    """Render an entry's tags list as prompt text ('—' when untagged). Shared by both
+    generation paths so the LLM sees tags consistently (single-pass AND map-reduce)."""
+    tags = metadata.get("tags")
+    return ", ".join(tags) if tags else "—"
+
+
 def _prepare_for_prompt(docs: list[Document]) -> list[Document]:
     """Normalise metadata so DOCUMENT_PROMPT can always render (untagged entries
     have no 'tags' key, and tags are stored as a list)."""
     prepared = []
     for d in docs:
-        tags = d.metadata.get("tags")
         meta = {
             **d.metadata,
             "date_str": d.metadata.get("date_str", "?"),
-            "tags": ", ".join(tags) if tags else "—",
+            "tags": _tags_str(d.metadata),
         }
         prepared.append(Document(page_content=d.page_content, metadata=meta))
     return prepared
@@ -646,7 +734,10 @@ def plan_generation(
     # then stream a single narrative that combines the dated batch-summaries (reduce).
     dated_docs = [
         Document(
-            page_content=f"[{d.metadata.get('date_str', '?')}] {d.page_content}",
+            page_content=(
+                f"[{d.metadata.get('date_str', '?')}] "
+                f"(tags: {_tags_str(d.metadata)}) {d.page_content}"
+            ),
             metadata=d.metadata,
         )
         for d in docs
@@ -666,8 +757,8 @@ def plan_generation(
         map_input = (
             "/no_think\n"
             "Summarize the key points of these chronologically-ordered diary entries "
-            "as a few concise bullet points, keeping the [YYYY-MM-DD] date next to "
-            f"each point.\n\n{joined}\n\nDated summary:"
+            "as a few concise bullet points, keeping the [YYYY-MM-DD] date (and any "
+            f"tags) next to each point.\n\n{joined}\n\nDated summary:"
         )
         resp = gen_llm.invoke(map_input)
         partials.append(resp.content)
