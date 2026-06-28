@@ -20,6 +20,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pytest>=8.0.0",
     "ruff>=0.15.13",
 ]
 
@@ -45,3 +46,7 @@ indent-style = "space"
 from-first = false
 combine-as-imports = true
 force-sort-within-sections = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
