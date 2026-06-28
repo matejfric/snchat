@@ -17,6 +17,7 @@ addressed. All code lives in `app.py` unless noted; config in `constants.py`.
   - [2.4. "Last N sessions" processed the whole tag](#24-last-n-sessions-processed-the-whole-tag)
   - [2.5. Whole-diary overview isn't enumerable](#25-whole-diary-overview-isnt-enumerable)
   - [2.6. Scattered entity mentions exceeded top-K](#26-scattered-entity-mentions-exceeded-top-k)
+  - [2.7. Structured extraction returned None (no tool call)](#27-structured-extraction-returned-none-no-tool-call)
 - [3. Generation \& conversation](#3-generation--conversation)
   - [3.1. Cross-turn answer confusion (follow-ups drift to the wrong scope)](#31-cross-turn-answer-confusion-follow-ups-drift-to-the-wrong-scope)
   - [3.2. Oversized context silently truncated](#32-oversized-context-silently-truncated)
@@ -126,6 +127,18 @@ addressed. All code lives in `app.py` unless noted; config in `constants.py`.
   does. `_fuzzy_retrieve()` also logs `scanned`/`matched`/`best_score` so a 0-result is
   diagnosable (a high `best_score` below the threshold points straight at this class of
   bug).
+
+### 2.7. Structured extraction returned None (no tool call)
+
+- **Symptom:** "summarize my whole diary" crashed with `AttributeError: 'NoneType'
+  object has no attribute 'query'` in `extract()`.
+- **Cause:** `with_structured_output(method="function_calling")` returns **None** — not
+  an exception — when the model emits no tool call (likely for a bare overview with
+  nothing to extract). The `try/except` only caught exceptions, so the `None` reached
+  `parsed.query`.
+- **Fix:** treat a `None` result like a failure — fall back to
+  `_fallback_extract_query()` (which routes a bare overview to `breadth="all"`, no
+  filter). Covered by `tests/test_extract_fallback.py`.
 
 ## 3. Generation & conversation
 

@@ -410,12 +410,15 @@ class DiaryQueryRouter:
         )
 
         chain = extraction_prompt | structured_llm
+        parsed: DiarySearchQuery | None = None
         try:
-            parsed: DiarySearchQuery = chain.invoke(
-                {"input": query, "chat_history": chat_history}
-            )
+            parsed = chain.invoke({"input": query, "chat_history": chat_history})
         except Exception as exc:
             logger.warning("Structured extraction failed, using fallback: %s", exc)
+
+        # `with_structured_output` can return None (the model emitted no tool call, e.g.
+        # for a bare "summarize my whole diary") WITHOUT raising; fall back then too.
+        if parsed is None:
             parsed = self._fallback_extract_query(query, today)
 
         if not parsed.query or not parsed.query.strip():
