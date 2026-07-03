@@ -1,13 +1,15 @@
 from collections import defaultdict
 import datetime as dt
 import json
+import logging
 from pathlib import Path
 import tempfile
 from typing import TypedDict
 import zipfile
 
-from app import logger
 from constants import EXPECTED_SN_VERSION
+
+logger = logging.getLogger(__name__)
 
 
 class StandardNotesData(TypedDict):
