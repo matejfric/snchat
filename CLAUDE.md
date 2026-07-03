@@ -28,7 +28,7 @@ uv run ruff format .             # format
 uv run pytest                    # run tests (tests/)
 ```
 
-Automated checks are Ruff (lint/format) and a small pytest suite in `tests/` (currently the keyword matcher). The VS Code workspace runs Ruff fix + import-organize on save.
+Automated checks are Ruff (lint/format) and a pytest suite in `tests/` (keyword matcher, extraction fallback, and mock-diary parse/retrieval ground truth). `uv run python tests/mock_diary.py` builds a deterministic synthetic Standard Notes backup ZIP for manual end-to-end testing — see `docs/mock_diary.md` for its answer key. The VS Code workspace runs Ruff fix + import-organize on save.
 
 ## Architecture
 

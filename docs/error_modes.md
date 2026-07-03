@@ -216,12 +216,14 @@ Prompts the app should handle, grouped by the behavior they exercise, with the e
 routing/retrieval. Use as a manual checklist after touching the router, `retrieve()`, or
 generation; each group cross-references the failure mode above.
 
-> **Not yet automated.** Asserting on *answers* (not just routing) needs a representative
-> diary fixture — a mock diary or an open, unlicensed diary dataset — which is
-> **deferred**. Today only `_keyword_hit` is unit-tested (`tests/test_keyword_hit.py`).
-> The entity/topic prompts below assume the diary actually contains those mentions;
-> substitute ones present in your backup. Tags shown are the fixed Czech tags from
-> `constants.TAG_ALIASES`.
+> **Partially automated against the mock diary** (`tests/mock_diary.py`, see
+> [mock_diary.md](mock_diary.md)): parse-level ground truth and keyword matching in
+> `tests/test_mock_diary.py`, and the routing/retrieval behavior below against a real
+> in-memory Chroma in `tests/test_mock_retrieval.py`. Answer-*quality* checks (the LLM
+> steps) remain manual — build the ZIP with `uv run python tests/mock_diary.py`, ingest
+> it in the sidebar, and use the answer key in mock_diary.md. When testing against your
+> real backup instead, substitute entities/topics that actually occur in it. Tags shown
+> are the fixed Czech tags from `constants.TAG_ALIASES`.
 
 ### 6.1. Multilingual tag mapping (→ 2.1)
 
