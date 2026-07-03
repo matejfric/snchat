@@ -1,6 +1,6 @@
 EXPECTED_SN_VERSION = "004"  # Standard Notes backup format version
 EMBEDDINGS_MODEL_NAME = "bge-m3"  # Ollama model for embeddings
-MODEL_NAME = "qwen3.5:9b"  # Ollama model for LLM responses
+MODEL_NAME = "gemma4:12b"  # Ollama model for LLM responses
 TOKEN_WARN_RATIO = 0.75  # warn when the conversation estimate crosses this fraction
 CONTEXT_WINDOW = 8192  # query LLM's num_ctx (history budget); the context-gauge denom
 # Above this much entry text, generation uses map-reduce instead of a single pass.
