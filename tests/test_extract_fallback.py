@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 from langchain_core.runnables import RunnableLambda
 
-from app import DiaryQueryRouter
+from diary_query_router import DiaryQueryRouter
 
 
 def _router_returning(value) -> DiaryQueryRouter:

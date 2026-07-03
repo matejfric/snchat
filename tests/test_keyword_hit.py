@@ -9,7 +9,7 @@ router lowercases both sides before calling), so the tests mirror that contract.
 
 import pytest
 
-from app import _keyword_hit
+from diary_query_router import _keyword_hit
 
 # The surface forms the router would expand the query "GoT" into.
 CANDIDATES = ["got", "game of thrones", "hra o trůny"]

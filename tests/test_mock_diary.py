@@ -10,8 +10,8 @@ from collections import Counter
 
 import pytest
 
-from app import _keyword_hit
 from constants import FETCH_ALL_MAX, SINGLE_PASS_BUDGET
+from diary_query_router import _keyword_hit
 from parser import parse_standard_notes
 from tests.mock_diary import (
     EMPTY_TEXT_DATE,

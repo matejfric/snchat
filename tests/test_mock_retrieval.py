@@ -13,8 +13,9 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import DeterministicFakeEmbedding
 import pytest
 
-from app import DiaryQueryRouter, DiarySearchQuery
 from constants import SEARCH_K
+from diary_query_router import DiaryQueryRouter
+from diary_search_query import DiarySearchQuery
 from parser import parse_standard_notes
 from tests.mock_diary import (
     CLIMBING_DATES,
