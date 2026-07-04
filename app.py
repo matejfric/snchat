@@ -19,6 +19,7 @@ from constants import (
     GEN_NUM_PREDICT,
     MODEL_NAME,
     PERSIST_DIR,
+    TAG_EMOJI,
     TOKEN_WARN_RATIO,
 )
 from diary_query_router import DiaryQueryRouter
@@ -141,9 +142,7 @@ with st.sidebar:
                     for note in parsed_notes:
                         all_tags.update(note["tags"])
                     st.session_state.available_tags = sorted(all_tags - {""})
-                    logger.info(
-                        "Available tags: %s", st.session_state.available_tags
-                    )
+                    logger.info("Available tags: %s", st.session_state.available_tags)
 
                     logger.info("Indexing complete")
                     st.success(
@@ -277,16 +276,29 @@ if st.session_state.vectorstore is not None:
 
             # Show what was actually searched, so a misroute (wrong year, dropped
             # tag, spurious keywords) is visible instead of silently producing a
-            # fluent answer grounded in the wrong entries.
-            route_bits = [scope or parsed.query]
+            # fluent answer grounded in the wrong entries. Built from the applied
+            # filters, not the LLM's free-text query — tags/keywords already name
+            # the topic, so the query is shown only when neither is set.
+            route_bits = []
             if parsed.tags:
-                route_bits.append("tags: " + ", ".join(parsed.tags))
+                route_bits.append(" ".join(TAG_EMOJI.get(t, t) for t in parsed.tags))
             if parsed.keywords:
                 route_bits.append("keywords: " + ", ".join(parsed.keywords))
+            if not route_bits and parsed.query.strip():
+                route_bits.append(parsed.query.strip())
+            if parsed.year:
+                route_bits.append(
+                    "-".join(
+                        f"{v:02d}" for v in (parsed.year, parsed.month, parsed.day) if v
+                    )
+                )
+            elif parsed.month:
+                route_bits.append(f"month {parsed.month}")
             if parsed.recent:
                 route_bits.append(f"latest {parsed.recent}")
+            _entries_text = "entries" if len(docs) != 1 else "entry"
             st.caption(
-                f"🔎 Searched: {' · '.join(route_bits)} — {len(docs)} entries"
+                f"🔎 Searched: {' · '.join(route_bits)} · {len(docs)} {_entries_text}"
             )
 
             # A whole-diary overview can't be enumerated into one prompt; flag the

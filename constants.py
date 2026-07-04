@@ -68,3 +68,18 @@ MONTH_MAP: dict[str, int] = {
     "december": 12,
     "dec": 12,
 }
+
+TAG_EMOJI: dict[str, str] = {
+    "běh": "🏃",
+    "plavání": "🏊",
+    "diplomka": "📖",
+    "státnice": "🎓",
+    "cvičení": "💪",
+    "fitko": "🏋️",
+    "lyže": "🎿",
+    "skialp": "⛷",
+    "mtb": "🚴",
+    "turistika": "🥾",
+    "lezení": "🧗",
+    "koloběžka": "🛴",
+}
