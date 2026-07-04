@@ -11,8 +11,8 @@ SNChat is a fully local, offline RAG chatbot over a personal diary exported from
 The app requires [Ollama](https://ollama.com/) running locally with two models pulled — without them it cannot embed or answer:
 
 ```bash
-ollama pull qwen3.5:9b   # LLM for query parsing + answers  (MODEL_NAME in app.py)
-ollama pull bge-m3       # embeddings                        (EMBEDDINGS_MODEL_NAME in app.py)
+ollama pull gemma4:12b   # LLM for query parsing + answers  (MODEL_NAME in constants.py)
+ollama pull bge-m3       # embeddings                        (EMBEDDINGS_MODEL_NAME in constants.py)
 ```
 
 ## Commands

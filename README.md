@@ -32,7 +32,7 @@ Requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and a running
 uv sync
 
 # 2. Pull the local models (LLM + embeddings)
-ollama pull qwen3.5:9b
+ollama pull gemma4:12b
 ollama pull bge-m3
 
 # 3. Run the app
