@@ -1,7 +1,9 @@
 # Error modes & fixes
 
 A running catalog of bugs / failure modes discovered in SNChat and how each is currently
-addressed. All code lives in `app.py` unless noted; config in `constants.py`.
+addressed. Code locations: backup parsing in `parser.py`, routing/retrieval in
+`diary_query_router.py`, generation planning in `generation.py`, UI wiring in `app.py`;
+config in `constants.py`.
 
 > Many of these are **query-side** fixes (no re-index). The ones marked **[re-index]**
 > change ingestion and require re-uploading the backup to rebuild `diary_vector_db/`.

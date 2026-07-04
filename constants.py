@@ -3,9 +3,17 @@ EMBEDDINGS_MODEL_NAME = "bge-m3"  # Ollama model for embeddings
 MODEL_NAME = "gemma4:12b"  # Ollama model for LLM responses
 TOKEN_WARN_RATIO = 0.75  # warn when the conversation estimate crosses this fraction
 CONTEXT_WINDOW = 8192  # query LLM's num_ctx (history budget); the context-gauge denom
-# Above this much entry text, generation uses map-reduce instead of a single pass.
-# ~45k chars ≈ 11k tokens, comfortably inside the generation LLM's num_ctx=16384.
-SINGLE_PASS_BUDGET = 45000
+# Offline char→token estimate divisor. ~4 fits English, but the diary is Czech,
+# which tokenizes closer to ~3 chars/token on these model families — better to
+# over-estimate (warn early) than to silently truncate.
+CHARS_PER_TOKEN = 3
+GEN_NUM_CTX = 16384  # generation LLM's context window
+GEN_NUM_PREDICT = 2048  # generation LLM's max answer tokens (reserved inside num_ctx)
+# Char budget for ONE generation prompt — context + chat history + question +
+# scaffolding. Ollama silently truncates past num_ctx, so plan_generation()
+# measures the FULL prompt against this: above it, generation switches to
+# map-reduce (and keeps condensing the reduce input until it fits too).
+SINGLE_PASS_BUDGET = (GEN_NUM_CTX - GEN_NUM_PREDICT) * CHARS_PER_TOKEN  # 43,008
 # Filtered scopes with at most this many entries are fetched in FULL (no top-K cap).
 FETCH_ALL_MAX = 50
 SEARCH_K = 10  # entries to retrieve for a point lookup (entries are tiny)
