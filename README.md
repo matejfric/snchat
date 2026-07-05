@@ -1,6 +1,7 @@
 # 📔 SNChat
 
 [![codecov](https://codecov.io/gh/matejfric/snchat/graph/badge.svg)](https://codecov.io/gh/matejfric/snchat)
+[![GitHub license](https://img.shields.io/github/license/Naereen/StrapDown.js.svg)](https://github.com/matejfric/snchat/blob/main/LICENSE)
 
 A fully **private, offline** chatbot for your personal diary exported from
 [Standard Notes](https://standardnotes.com/). Ask natural-language questions about your
