@@ -176,7 +176,10 @@ class DiaryQueryRouter:
             "previous Monday through Sunday, 'this winter' spans December 1 through "
             "the end of February ACROSS the year boundary, 'between March and May "
             "2026' means 2026-03-01 to 2026-05-31; 'since March' sets only date_from. "
-            "Use year/month/day (never a range) for a single day, month, or year. "
+            "date_from/date_to must be yyyy-mm-dd STRINGS — never a bare year or "
+            "number. Use year/month/day (never a range) for a single day, month, or "
+            "year; when the question names ONE exact day ('on 2025-05-18', 'today "
+            "last year'), fill year AND month AND day together. "
             "Always provide a semantic search query. Only set "
             "date/tag filters when the user explicitly or implicitly refers to a time "
             "period or tag. Set 'recent' to N only when the user asks for a specific "
@@ -230,6 +233,29 @@ class DiaryQueryRouter:
             parsed.date_to = None
         if parsed.date_from and parsed.date_to and parsed.date_from > parsed.date_to:
             parsed.date_from, parsed.date_to = parsed.date_to, parsed.date_from
+
+        # Canonicalize a single-day "range" (the model answers e.g. "today last
+        # year" with date_from == date_to) to year/month/day, so the scope
+        # phrase, route caption and filters all see the point lookup it is.
+        if parsed.date_from and parsed.date_from == parsed.date_to:
+            d = dt.date.fromisoformat(parsed.date_from)
+            parsed.year, parsed.month, parsed.day = d.year, d.month, d.day
+            parsed.date_from = parsed.date_to = None
+
+        # One ISO date typed verbatim in the question is authoritative — the
+        # model sometimes returns just its year (error_modes §2.13). Only when
+        # extraction produced no day-precision filter, so a correct range
+        # ("the week after 2025-05-18") is never overwritten; applies to the
+        # fallback path too (a literal date is copied, not guessed).
+        if not (parsed.day or parsed.date_from or parsed.date_to):
+            typed = {
+                m
+                for m in re.findall(r"\b\d{4}-\d{2}-\d{2}\b", query)
+                if _date_int(m) is not None
+            }
+            if len(typed) == 1:
+                d = dt.date.fromisoformat(typed.pop())
+                parsed.year, parsed.month, parsed.day = d.year, d.month, d.day
 
         logger.info(
             "Routed query=%r year=%s month=%s day=%s range=%s..%s tags=%s "

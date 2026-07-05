@@ -1,11 +1,17 @@
 # Query understanding & retrieval
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class DiarySearchQuery(BaseModel):
-    """Extract search parameters from the user's question about their diary."""
+    """Extract search parameters from the user's question about their diary.
+
+    The lenient date validator degrades a junk range value from the extraction
+    LLM (e.g. `date_from: 2025` emitted as a bare integer) to None. Without it
+    one bad optional field fails validation of the WHOLE tool call and every
+    valid filter in it is silently lost to the no-filter fallback
+    (error_modes §2.12)."""
 
     query: str = Field(
         description="The semantic search text to find relevant diary entries"
@@ -61,3 +67,10 @@ class DiarySearchQuery(BaseModel):
             "bouldering progression'). 'specific' for point lookups (the default)."
         ),
     )
+
+    @field_validator("date_from", "date_to", mode="before")
+    @classmethod
+    def _lenient_date(cls, v):
+        # Bare years/numbers are junk here; invalid ISO *strings* are dropped
+        # later by the router's range normalization.
+        return v if isinstance(v, str) else None

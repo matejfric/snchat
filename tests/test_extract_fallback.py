@@ -61,10 +61,11 @@ def test_extract_falls_back_on_exception() -> None:
 def test_fallback_never_guesses_filters() -> None:
     # Date-, tag- and count-looking phrasings must NOT become filters: the old
     # regex extractor turned "may" into month=5, "run"⊂"brunch" into tag běh and
-    # "last 2 weeks" into recent=2 (error_modes §2.9).
+    # "last 2 weeks" into recent=2 (error_modes §2.9). The ONE exception is a
+    # verbatim yyyy-mm-dd typed in the question — that's a literal value, not a
+    # guess, and the backfill (§2.13) applies to the fallback path too.
     router = _router_returning(None, available_tags=["běh", "lyže"])
     for q in (
-        "what did I do on 2025-05-18?",
         "what may have caused my knee pain?",
         "did I have brunch with Anna?",
         "what did I do in the last 2 weeks?",
@@ -77,6 +78,9 @@ def test_fallback_never_guesses_filters() -> None:
         assert parsed.keywords == []
         assert parsed.recent is None
         assert parsed.breadth == "specific"
+
+    parsed = router.extract("what did I do on 2025-05-18?", [])
+    assert (parsed.year, parsed.month, parsed.day) == (2025, 5, 18)
 
 
 def test_extract_normalizes_aliased_and_cased_tags() -> None:
@@ -116,6 +120,53 @@ def test_extract_swaps_a_reversed_date_range() -> None:
     )
     parsed = router.extract("between March and May 2026", [])
     assert (parsed.date_from, parsed.date_to) == ("2026-03-01", "2026-05-31")
+
+
+def test_junk_int_range_degrades_but_valid_fields_survive() -> None:
+    # Verbatim tool call gemma4 emitted for "what was I up to today last year?":
+    # date_from/date_to as bare ints failed validation of the WHOLE call, so the
+    # valid year=2025 was lost to the no-filter fallback (error_modes §2.12).
+    # The schema's lenient date validator degrades just the junk fields instead.
+    parsed = DiarySearchQuery.model_validate(
+        {
+            "query": "What was I doing on July 5th last year?",
+            "date_from": 2025,
+            "date_to": 2025,
+            "year": 2025,
+        }
+    )
+    assert parsed.year == 2025
+    assert (parsed.date_from, parsed.date_to) == (None, None)
+
+
+def test_extract_backfills_underparsed_typed_date() -> None:
+    # "what did I do on 2025-05-18?" extracted as year=2025 only routed to
+    # year-wide similarity search and missed the entry itself (error_modes
+    # §2.13); the literal date in the question is authoritative.
+    router = _router_returning(DiarySearchQuery(query="x", year=2025))
+    parsed = router.extract("what did I do on 2025-05-18?", [])
+    assert (parsed.year, parsed.month, parsed.day) == (2025, 5, 18)
+
+
+def test_typed_date_never_overwrites_an_extracted_range() -> None:
+    router = _router_returning(
+        DiarySearchQuery(query="x", date_from="2025-05-19", date_to="2025-05-25")
+    )
+    parsed = router.extract("what did I do the week after 2025-05-18?", [])
+    assert (parsed.date_from, parsed.date_to) == ("2025-05-19", "2025-05-25")
+    assert parsed.day is None
+
+
+def test_extract_collapses_single_day_range_to_exact_date() -> None:
+    # gemma4 answers "today last year" with date_from == date_to — functionally
+    # right, but canonicalizing to year/month/day keeps the scope phrase and
+    # route caption reading as the point lookup it is.
+    router = _router_returning(
+        DiarySearchQuery(query="x", date_from="2025-07-05", date_to="2025-07-05")
+    )
+    parsed = router.extract("what was I up to today last year?", [])
+    assert (parsed.year, parsed.month, parsed.day) == (2025, 7, 5)
+    assert (parsed.date_from, parsed.date_to) == (None, None)
 
 
 def test_extract_drops_invalid_range_dates() -> None:

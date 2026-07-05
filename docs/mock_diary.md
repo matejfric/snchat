@@ -62,8 +62,8 @@ ranking (fake embeddings return arbitrary neighbors), and the extraction LLM's r
 | "kolik jsem toho naběhal?" | tag `běh` (Czech) | distances from 5 entries, ~56 km total |
 | "what did I do on 2025-05-18?" | exact date | Pálava hike, Děvín, wine tasting in Pavlov |
 | "what were my impressions of Game of Thrones?" / "did I enjoy GoT?" | `keywords` ≈ [GoT, Game of Thrones, Hra o trůny] | all **12** mentions incl. declined Czech + the long 2025-07-15 entry; verdict "8/10, weak ending" (2025-10-12); **no** Kutná Hora / "forgot" entries |
-| "what did I think of the Witcher books?" | `keywords` ≈ [Zaklínač, The Witcher] | 4 mentions, books > show |
+| "what did I think of the Witcher books?" | `keywords` ≈ [Zaklínač, The Witcher] | 4 mentions, books > show — best-effort: the Czech mentions are found only if the LLM expands to "Zaklínač" (error_modes §2.14) |
 | "when did I feel anxious?" | thematic → `keywords` empty, semantic path | 2025-04-28 (thesis), 2025-05-25 (exams), 2026-01-10 (new job) |
 | "summarize my whole diary" | no filter → top-K + narrowing tip caption | deliberate limitation (§2.5) |
 | "summarize my year 2025" | `year=2025`, breadth=all | fetch-all >50 entries, >45k chars → **map-reduce** path |
-| "what was I up to today last year?" | `year`=today−1 + today's month/day | depends on run date — filler covers 2025 every ~6 days, so expect a hit or an honest "no entries" |
+| "what was I up to today last year?" | `year`=today−1 guaranteed; month/day best-effort (relative-date field precision is model-dependent — typed dates are exact per §2.13) | depends on run date — filler covers 2025 every ~6 days, so expect a hit or an honest "no entries" |
