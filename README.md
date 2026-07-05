@@ -58,6 +58,78 @@ are skipped. Tags come straight from the backup; multilingual tag synonyms are
 configurable in `constants.py` (`TAG_ALIASES` - keys must match the tags from the backup).
 Your diary and the built index are gitignored and never leave your machine.
 
+## Architecture
+
+Three stages:
+
+1. **ingest** a backup into a local vector store,
+2. **route** each question into structured filters + a retrieval strategy,
+3. **generate** a grounded answer.
+
+All LLM and embedding calls go to a local Ollama; nothing leaves the machine.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant App as app.py
+    participant Parser as parser.py
+    participant Router as diary_query_router.py
+    participant Gen as generation.py
+    participant Chroma@{ "type" : "database" } as ChromaDB
+    participant Ollama as Ollama
+
+    rect rgba(68, 98, 144, 1)
+    note over User, Ollama: 1. Ingest (once per backup)
+    User->>App: Upload Standard Notes ZIP
+    activate App
+    App->>Parser: parse_standard_notes(zip)
+    activate Parser
+    Parser-->>App: Documents (notes + tags + date metadata)
+    deactivate Parser
+    App->>Ollama: Embed entries (bge-m3)
+    activate Ollama
+    Ollama-->>App: Vectors
+    deactivate Ollama
+    App->>Chroma: Persist to diary_vector_db/
+    activate Chroma
+    Chroma-->>App: Index ready
+    deactivate Chroma
+    deactivate App
+    end
+
+    rect rgba(77, 121, 77, 1)
+    note over User, Ollama: 2. Route + retrieve (per question)
+    User->>App: Ask a question
+    activate App
+    App->>Router: extract(question, history)
+    activate Router
+    Router->>Ollama: Parse into DiarySearchQuery (LLM)
+    activate Ollama
+    Ollama-->>Router: filters (date / tag / keywords / breadth)
+    deactivate Ollama
+    Router->>Chroma: retrieve() — similarity or metadata filter
+    activate Chroma
+    Chroma-->>Router: matching entries
+    deactivate Chroma
+    Router-->>App: retrieved entries
+    deactivate Router
+    end
+
+    rect rgba(179, 113, 59, 1)
+    note over User, Ollama: 3. Generate
+    App->>Gen: plan_generation(entries, question, history)
+    activate Gen
+    Gen-->>App: messages (single-pass or map-reduce)
+    deactivate Gen
+    App->>Ollama: Stream answer (gemma4:12b)
+    activate Ollama
+    Ollama-->>App: tokens + usage metrics
+    deactivate Ollama
+    App-->>User: Streamed answer + citations
+    deactivate App
+    end
+```
+
 ## Docs
 
 - [CLAUDE.md](CLAUDE.md) — architecture & developer guide.
