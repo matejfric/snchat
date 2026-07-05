@@ -8,11 +8,11 @@ enough to assert. Answer wording stays un-judged (no LLM judge yet); pass
 --generate to also run generation so traces/eyeballing cover the full turn.
 
 This is a diagnostic, not a unit test: extraction is model behavior, so a
-failure is a FINDING to inspect (in Phoenix, one trace per case when
-SNCHAT_TRACE=1), not necessarily a code bug. Requires Ollama running with
-gemma4:12b + bge-m3 pulled; the real ./diary_vector_db is never touched.
+failure is a FINDING to inspect (set SNCHAT_TRACE=1 to append each case's full
+turn to diagnostics/traces.jsonl), not necessarily a code bug. Requires Ollama
+running with gemma4:12b + bge-m3 pulled; the real ./diary_vector_db is never
+touched.
 
-    uv run phoenix serve                                        # optional UI
     SNCHAT_TRACE=1 uv run python tests/replay_answer_key.py [--generate] [--case ID]
 
 Exits 1 if any check failed.
@@ -331,7 +331,7 @@ def main() -> int:
 
     print(
         f"\n{len(cases)} cases, {failed_checks} failed check(s)"
-        + (" — inspect traces in Phoenix (localhost:6006)" if tracing.ENABLED else "")
+        + (f" — traces in {tracing.TRACE_PATH}" if tracing.ENABLED else "")
     )
     return 1 if failed_checks else 0
 

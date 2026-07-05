@@ -48,7 +48,7 @@ for _mod in ("__main__", "parser", "diary_query_router", "generation"):
     logging.getLogger(_mod).setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-tracing.setup()  # dev-only Phoenix tracing; no-op unless SNCHAT_TRACE=1
+tracing.setup()  # dev-only JSONL tracing; no-op unless SNCHAT_TRACE=1
 
 # langchain-chroma's default collection name — existing DBs were built with it and
 # the startup load path below opens it implicitly via Chroma(persist_directory=…).

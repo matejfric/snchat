@@ -15,8 +15,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "arize-phoenix>=17.18.0",
-    "openinference-instrumentation-langchain>=0.1.67",
     "pytest>=8.0.0",
     "pytest-cov>=6.0.0",
     "ruff>=0.15.13",

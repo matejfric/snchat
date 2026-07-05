@@ -1,90 +1,102 @@
-"""Dev-only diagnostic tracing to a local Phoenix server (docs/diagnostics.md).
+"""Dev-only diagnostic tracing to a local JSONL file (docs/diagnostics.md).
 
-Disabled unless SNCHAT_TRACE=1, and then everything stays on localhost — the
-app's offline guarantee is untouched. When enabled:
-
-- every LangChain LLM call (extraction, map/condense, streamed answer) is
-  auto-traced via OpenInference, nested under one `diary_turn` span per question;
-- the routing decisions the modules already narrate through `logging`
-  (retrieval strategy, Chroma `where` filter, generation plan) are attached to
-  the current span as events, so no core module needs instrumentation code;
-- `turn()` records the structured decision data (extracted DiarySearchQuery,
-  retrieved dates, plan mode, token usage) as span attributes.
+Disabled unless SNCHAT_TRACE=1; then each question→answer turn is appended as
+one JSON line to diagnostics/traces.jsonl — the question, the structured
+routing data set via `.set()` (extracted DiarySearchQuery, retrieval count +
+dates, plan, usage, answer), and the routing narration the modules already
+emit through `logging` (which retrieval branch fired, the Chroma where-clause).
+No network, no server, no dependency beyond the stdlib, so the app's offline
+guarantee is untouched. The same file feeds a future viewer and a headless
+LLM-as-judge; `read_turns()` is the shared reader.
 
 Usage:
 
-    uv run phoenix serve                        # trace UI at http://localhost:6006
-    SNCHAT_TRACE=1 uv run streamlit run app.py  # (second terminal)
+    SNCHAT_TRACE=1 uv run streamlit run app.py   # writes diagnostics/traces.jsonl
 """
 
 from contextlib import contextmanager
+import contextvars
+import datetime as dt
 import json
 import logging
 import os
+from pathlib import Path
+import uuid
 
 ENABLED = os.environ.get("SNCHAT_TRACE") == "1"
 
-# Loggers whose records become events on the current span (see module docstring).
+# Anchored to this file's directory (the repo root), NOT the CWD, so the app
+# (writer) and any reader agree on one location regardless of where each is
+# launched from. Overridable via env (and, in tests, by patching the global).
+TRACE_PATH = Path(
+    os.environ.get(
+        "SNCHAT_TRACE_PATH", Path(__file__).parent / "diagnostics" / "traces.jsonl"
+    )
+)
+
+# Loggers whose records are captured as `events` on the active turn — the exact
+# routing narration (chosen strategy + counts, the where-clause) that the
+# structured fields don't spell out.
 _BRIDGED_LOGGERS = ("parser", "diary_query_router", "generation")
 
-_tracer = None  # set once by setup(); module cache keeps it across Streamlit reruns
+# Per-thread handle on the turn currently being recorded, so the log handler
+# knows where to append. contextvars are per-thread, which is exactly right for
+# Streamlit's per-session ScriptRunner threads.
+_current: contextvars.ContextVar = contextvars.ContextVar("snchat_turn", default=None)
+_installed = False
 
 
-class _SpanEventHandler(logging.Handler):
-    """Mirror a log record onto the currently active span as an event."""
+class _LogCapture(logging.Handler):
+    """Append a bridged log record's message to the active turn's event list."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        try:
-            from opentelemetry import trace
-
-            span = trace.get_current_span()
-            if span.is_recording():
-                span.add_event(
-                    record.getMessage(),
-                    {"log.logger": record.name, "log.level": record.levelname},
-                )
-        except Exception:
-            self.handleError(record)
+        turn = _current.get()
+        if turn is not None:
+            turn.rec.setdefault("events", []).append(
+                f"{record.name}: {record.getMessage()}"
+            )
 
 
 def setup() -> None:
-    """Register the Phoenix OTel exporter and the LangChain auto-instrumentor.
-
-    No-op unless SNCHAT_TRACE=1; idempotent across Streamlit reruns. Imports are
-    deferred so the (dev-only) tracing packages are never touched in normal runs.
-    """
-    global _tracer
-    if not ENABLED or _tracer is not None:
+    """Install the log-capture handler once. No-op unless SNCHAT_TRACE=1;
+    idempotent across Streamlit reruns (module globals persist in-process)."""
+    global _installed
+    if not ENABLED or _installed:
         return
-
-    from openinference.instrumentation.langchain import LangChainInstrumentor
-    from phoenix.otel import register
-
-    # Exports to http://localhost:6006 unless PHOENIX_COLLECTOR_ENDPOINT overrides;
-    # unbatched, so spans appear in the UI as soon as each step finishes.
-    provider = register(project_name="snchat", set_global_tracer_provider=True)
-    LangChainInstrumentor().instrument(tracer_provider=provider)
-
-    handler = _SpanEventHandler(level=logging.DEBUG)
+    handler = _LogCapture(level=logging.DEBUG)
     for name in _BRIDGED_LOGGERS:
         logging.getLogger(name).addHandler(handler)
+    _installed = True
 
-    _tracer = provider.get_tracer("snchat")
+
+def read_turns(path: Path | None = None) -> list[dict]:
+    """Read all turn records, skipping malformed/partial lines — a concurrent
+    read during an append, or a crash mid-write, can leave a truncated final
+    line. Shared by the future viewer and the headless judge."""
+    path = path or TRACE_PATH
+    if not path.exists():
+        return []
+    turns = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            try:
+                turns.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return turns
 
 
 class _Turn:
-    """Attribute recorder for the per-question root span."""
-
-    def __init__(self, span) -> None:
-        self._span = span
+    def __init__(self, rec: dict) -> None:
+        self.rec = rec
 
     def set(self, key: str, value) -> None:
-        """Record a span attribute; dicts/objects are JSON-ified, empties skipped."""
+        """Record a field on the turn (stored natively — dicts/lists stay
+        structured, unlike the old span attributes). Empties are skipped, so an
+        absent filter doesn't clutter the record."""
         if value is None or value == "" or value == []:
             return
-        if not isinstance(value, str | bool | int | float | list | tuple):
-            value = json.dumps(value, ensure_ascii=False, default=str)
-        self._span.set_attribute(key, value)
+        self.rec[key] = value
 
 
 class _NoopTurn:
@@ -97,20 +109,26 @@ _NOOP = _NoopTurn()
 
 @contextmanager
 def turn(question: str, session_id: str | None = None):
-    """Root span for one question→answer turn; LLM sub-spans nest under it.
-
-    `session_id` groups turns of one conversation in Phoenix's Sessions view.
-    Yields a no-op recorder when tracing is disabled.
-    """
-    if _tracer is None:
+    """Record one question→answer turn as a JSONL line, written on exit even if
+    the turn is interrupted (Stop click) or raises — so partial turns aren't
+    lost. Yields a recorder with `.set()`; a no-op when tracing is disabled."""
+    if not ENABLED:
         yield _NOOP
         return
 
-    attributes = {
-        "openinference.span.kind": "CHAIN",
+    rec: dict = {
+        "id": uuid.uuid4().hex,
+        "ts": dt.datetime.now().isoformat(timespec="seconds"),
+        "session.id": session_id or "default",
         "input.value": question,
     }
-    if session_id:
-        attributes["session.id"] = session_id
-    with _tracer.start_as_current_span("diary_turn", attributes=attributes) as span:
-        yield _Turn(span)
+    token = _current.set(_Turn(rec))
+    try:
+        yield _current.get()
+    finally:
+        _current.reset(token)
+        TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # One atomic append per record, so a concurrent reader never observes a
+        # half-written line.
+        with TRACE_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
