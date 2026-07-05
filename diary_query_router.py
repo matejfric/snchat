@@ -210,34 +210,45 @@ class DiaryQueryRouter:
         # `with_structured_output` can return None (the model emitted no tool call, e.g.
         # for a bare "summarize my whole diary") WITHOUT raising; fall back then too.
         if parsed is None:
+            logger.info("Extraction produced no tool call; using no-filter fallback")
             parsed = self._fallback_extract_query(query)
 
         if not parsed.query or not parsed.query.strip():
+            logger.debug("Empty semantic query; backfilled from the raw question")
             parsed.query = query
 
         # Normalize returned tags — exact value, re-cased tag, or an echoed alias
         # ("skiing" fans out to lyže+skialp) — then drop hallucinated leftovers,
         # de-duplicated in order. An exact-match clamp may silently lose the filter
         # when the model echoed an alias (error_modes §2.10).
+        raw_tags = list(parsed.tags)
         resolved = [
             tag
             for returned in parsed.tags
             for tag in self._alias_to_tags.get(returned.strip().casefold(), [])
         ]
         parsed.tags = list(dict.fromkeys(resolved))
+        if parsed.tags != raw_tags:
+            logger.info("Normalized tags %s -> %s", raw_tags, parsed.tags)
 
         # Normalize the date range: drop invalid dates, swap a reversed range.
         if parsed.date_from and _date_int(parsed.date_from) is None:
+            logger.info("Dropped invalid date_from=%r", parsed.date_from)
             parsed.date_from = None
         if parsed.date_to and _date_int(parsed.date_to) is None:
+            logger.info("Dropped invalid date_to=%r", parsed.date_to)
             parsed.date_to = None
         if parsed.date_from and parsed.date_to and parsed.date_from > parsed.date_to:
+            logger.info(
+                "Swapped reversed range %s..%s", parsed.date_from, parsed.date_to
+            )
             parsed.date_from, parsed.date_to = parsed.date_to, parsed.date_from
 
         # Canonicalize a single-day "range" (the model answers e.g. "today last
         # year" with date_from == date_to) to year/month/day, so the scope
         # phrase, route caption and filters all see the point lookup it is.
         if parsed.date_from and parsed.date_from == parsed.date_to:
+            logger.info("Collapsed single-day range %s to y/m/d", parsed.date_from)
             d = dt.date.fromisoformat(parsed.date_from)
             parsed.year, parsed.month, parsed.day = d.year, d.month, d.day
             parsed.date_from = parsed.date_to = None
@@ -256,6 +267,7 @@ class DiaryQueryRouter:
             if len(typed) == 1:
                 d = dt.date.fromisoformat(typed.pop())
                 parsed.year, parsed.month, parsed.day = d.year, d.month, d.day
+                logger.info("Backfilled y/m/d from verbatim date %s", d.isoformat())
 
         logger.info(
             "Routed query=%r year=%s month=%s day=%s range=%s..%s tags=%s "
