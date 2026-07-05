@@ -77,17 +77,27 @@ with st.sidebar:
                     tmp_file_path = Path(tmp_file.name)
 
                 logger.info("Parsing Standard Notes backup from %s", tmp_file_path)
-                parsed_notes = parse_standard_notes(tmp_file_path)
-                logger.info("Parsed %d notes from backup", len(parsed_notes))
+                parsed_notes, skipped = parse_standard_notes(tmp_file_path)
+                logger.info(
+                    "Parsed %d notes from backup (%d skipped)",
+                    len(parsed_notes),
+                    skipped,
+                )
 
                 documents = documents_from_notes(parsed_notes)
+                skipped_note = (
+                    f" {skipped} note(s) were skipped — missing yyyy-mm-dd title "
+                    "prefix or unreadable (encrypted?) content."
+                    if skipped
+                    else ""
+                )
 
                 if not documents:
                     st.error(
                         "No diary entries found in the backup. Make sure it is a "
                         "**decrypted** Standard Notes export and that note titles "
                         "start with an ISO date (yyyy-mm-dd). The existing index "
-                        "(if any) was left untouched."
+                        f"(if any) was left untouched.{skipped_note}"
                     )
                 else:
                     embeddings = OllamaEmbeddings(model=EMBEDDINGS_MODEL_NAME)
@@ -128,7 +138,7 @@ with st.sidebar:
                     logger.info("Indexing complete")
                     st.success(
                         f"Indexed {len(documents)} entries "
-                        f"from {len(parsed_notes)} notes!"
+                        f"from {len(parsed_notes)} notes!{skipped_note}"
                     )
             except Exception as exc:
                 logger.exception("Ingest failed")

@@ -1,10 +1,10 @@
 from collections import defaultdict
 import datetime as dt
+import io
 import json
 import logging
 from pathlib import Path
-import tempfile
-from typing import TypedDict
+from typing import NamedTuple, TypedDict
 import zipfile
 
 from langchain_core.documents import Document
@@ -12,6 +12,8 @@ from langchain_core.documents import Document
 from constants import EXPECTED_SN_VERSION
 
 logger = logging.getLogger(__name__)
+
+_TAG_MEMBER_PREFIX = "Items/Tag/"
 
 
 class StandardNotesData(TypedDict):
@@ -27,21 +29,27 @@ class StandardNotesTag(TypedDict):
     references: list[str]
 
 
+class ParsedBackup(NamedTuple):
+    """`skipped` counts Note items dropped for a violated data contract — an
+    unreadable (encrypted) content payload or a title without the yyyy-mm-dd
+    prefix. Deleted items and non-Note items are expected non-data, not skips."""
+
+    notes: list[StandardNotesData]
+    skipped: int
+
+
 def parse_standard_notes(
     backup_zip_path: Path, notes_json: str = "Standard Notes Backup and Import File.txt"
-) -> list[StandardNotesData]:
+) -> ParsedBackup:
     tag_data = []
-    sn_data = None
-    tags_path = Path("Items/Tag")
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_dir = Path(tmp_dir)
-        with zipfile.ZipFile(backup_zip_path) as zf:
-            zf.extractall(tmp_dir)
-        # Explicit utf-8: SN exports are utf-8 and the diary is Czech — the locale
-        # default (e.g. cp1250 on Windows) would crash or mojibake every entry.
-        with open(tmp_dir / notes_json, encoding="utf-8") as f:
-            sn_data = json.load(f)
+    # Read just the needed members straight from the ZIP — backups can carry large
+    # file attachments, and nothing needs extracting to disk. Explicit utf-8: SN
+    # exports are utf-8 and the diary is Czech — the locale default (e.g. cp1250
+    # on Windows) would crash or mojibake every entry.
+    with zipfile.ZipFile(backup_zip_path) as zf:
+        with zf.open(notes_json) as f:
+            sn_data = json.load(io.TextIOWrapper(f, encoding="utf-8"))
 
         if (v := sn_data.get("version")) != EXPECTED_SN_VERSION:
             logger.warning(
@@ -50,16 +58,16 @@ def parse_standard_notes(
                 v,
             )
 
-        tag_file_paths = (tmp_dir / tags_path).glob("*.txt")
-        for tag_file_path in tag_file_paths:
-            with open(tag_file_path, encoding="utf-8") as f:
-                tag_file_data = json.load(f)
-                tag_data.append(
-                    StandardNotesTag(
-                        title=tag_file_data["title"],
-                        references=[r["uuid"] for r in tag_file_data["references"]],
+        for name in zf.namelist():
+            if name.startswith(_TAG_MEMBER_PREFIX) and name.endswith(".txt"):
+                with zf.open(name) as f:
+                    tag_file_data = json.load(io.TextIOWrapper(f, encoding="utf-8"))
+                    tag_data.append(
+                        StandardNotesTag(
+                            title=tag_file_data["title"],
+                            references=[r["uuid"] for r in tag_file_data["references"]],
+                        )
                     )
-                )
 
     id_tag_map = defaultdict(set)
     for item in tag_data:
@@ -69,6 +77,7 @@ def parse_standard_notes(
 
     iso_date_fmt = "yyyy-mm-dd"
     parsed_data = []
+    skipped = 0
 
     for item in sn_data["items"]:
         if not item.get("deleted") and item.get("content_type") == "Note":
@@ -76,6 +85,7 @@ def parse_standard_notes(
             if not isinstance(content, dict):
                 # Encrypted backups carry content as an opaque string — skip; the
                 # caller reports zero parsed notes with a "decrypted export?" hint.
+                skipped += 1
                 continue
             uuid = item["uuid"]
             tags = id_tag_map[uuid]
@@ -91,10 +101,17 @@ def parse_standard_notes(
                     )
                 )
             except Exception:
+                skipped += 1
                 continue
 
+    if skipped:
+        logger.warning(
+            "Skipped %d Note item(s): no yyyy-mm-dd title prefix or unreadable "
+            "(encrypted?) content",
+            skipped,
+        )
     parsed_data.sort(key=lambda x: x["date"])
-    return parsed_data
+    return ParsedBackup(notes=parsed_data, skipped=skipped)
 
 
 def documents_from_notes(parsed_notes: list[StandardNotesData]) -> list[Document]:

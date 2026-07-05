@@ -732,7 +732,15 @@ def build_zip(path: Path) -> Path:
 
     backup = {"version": SN_VERSION, "items": items}
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(
+
+        def _write(name: str, data: str) -> None:
+            # Fixed member timestamp: writestr with a bare name stamps the current
+            # time into the header, which would break byte-identical rebuilds.
+            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, data)
+
+        _write(
             "Standard Notes Backup and Import File.txt",
             json.dumps(backup, ensure_ascii=False, indent=2),
         )
@@ -743,7 +751,7 @@ def build_zip(path: Path) -> Path:
                 "title": tag,
                 "references": [{"uuid": u, "content_type": "Note"} for u in refs],
             }
-            zf.writestr(
+            _write(
                 f"Items/Tag/{tag}.txt",
                 json.dumps(tag_file, ensure_ascii=False, indent=2),
             )

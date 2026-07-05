@@ -34,7 +34,7 @@ config in `constants.py`.
   - [4.1. `get_num_tokens` breaks the offline guarantee](#41-get_num_tokens-breaks-the-offline-guarantee)
   - [4.2. Streaming dropped token metrics](#42-streaming-dropped-token-metrics)
   - [4.3. Conversation can outgrow the context window unnoticed](#43-conversation-can-outgrow-the-context-window-unnoticed)
-- [5. Data contract (violations skip data silently)](#5-data-contract-violations-skip-data-silently)
+- [5. Data contract (violations skip data — with a visible count)](#5-data-contract-violations-skip-data--with-a-visible-count)
 - [6. Example prompts (regression reference)](#6-example-prompts-regression-reference)
 
 ## 1. Ingestion & vector store
@@ -294,11 +294,14 @@ config in `constants.py`.
 - **Fix:** sidebar **context gauge** (vs `CONTEXT_WINDOW`, the query-LLM/history budget)
   warns past `TOKEN_WARN_RATIO`, plus a **New chat** button to reset.
 
-## 5. Data contract (violations skip data silently)
+## 5. Data contract (violations skip data — with a visible count)
 
 - Each note's **title must begin with an ISO date** (`yyyy-mm-dd`); notes whose title
-  doesn't parse as a date are **silently skipped**. All date sorting/filtering derives
-  from this prefix.
+  doesn't parse as a date (or whose content is unreadable/encrypted) are **skipped
+  and counted** — the count is logged and appended to the ingest success/error
+  message, so a typo'd title (`2025-1-4`) is no longer invisible. Deleted items and
+  non-Note items are expected non-data and aren't counted. All date sorting/filtering
+  derives from this prefix.
 
 ## 6. Example prompts (regression reference)
 

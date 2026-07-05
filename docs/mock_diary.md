@@ -29,7 +29,7 @@ your real backup afterwards.
 | Keyword look-alikes: "**got**ická katedrála" (Kutná Hora), "I for**got** to reply" | 2 | whole-word acronym boundary — must NOT match |
 | Thesis/exams `diplomka`/`státnice` + an untagged 2026 entry, wording "úzkost"/"nervózní" | 5 | thematic question routes semantically, `keywords` stays empty |
 | Pálava trip `turistika` on **2025-05-18** | 1 | exact-date point lookup (§6.4) |
-| Untagged mundane filler (deterministic rotation, no trigger words) | ~90 | year 2025 exceeds `FETCH_ALL_MAX` entries **and** `SINGLE_PASS_BUDGET` chars → similarity fallback vs fetch-all + map-reduce |
+| Untagged mundane filler (deterministic rotation, no trigger words) | 72 | year 2025 exceeds `FETCH_ALL_MAX` entries **and** `SINGLE_PASS_BUDGET` chars → similarity fallback vs fetch-all + map-reduce |
 | Edge-case notes: no date prefix, `2025-02-30`, deleted item, non-Note item, empty text | 5 | data contract (§5) — all must be skipped (the empty-text one parses but isn't indexed) |
 
 Ground-truth constants (`GOT_DATES`, `CLIMBING_DATES`, `JANUARY_SKIING_DATES`, …) are

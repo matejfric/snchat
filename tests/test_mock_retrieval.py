@@ -39,7 +39,7 @@ def router(tmp_path_factory):
     zip_path = tmp_path_factory.mktemp("mockdb") / "mock_diary.zip"
     build_zip(zip_path)
     vectorstore = Chroma.from_documents(
-        documents_from_notes(parse_standard_notes(zip_path)),
+        documents_from_notes(parse_standard_notes(zip_path).notes),
         embedding=DeterministicFakeEmbedding(size=64),
         collection_name="snchat_mock_retrieval",
     )

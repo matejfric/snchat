@@ -29,10 +29,22 @@ from tests.mock_diary import (
 
 
 @pytest.fixture(scope="module")
-def parsed(tmp_path_factory):
+def result(tmp_path_factory):
     zip_path = tmp_path_factory.mktemp("mock") / "mock_diary.zip"
     build_zip(zip_path)
     return parse_standard_notes(zip_path)
+
+
+@pytest.fixture(scope="module")
+def parsed(result):
+    return result.notes
+
+
+def test_skipped_note_items_are_counted(result) -> None:
+    # Of the EDGE_ITEMS, the no-date title and the invalid date (2025-02-30) are
+    # skipped NOTES; the deleted item and the non-Note item are expected non-data
+    # (not counted), and the empty-text note parses (dropped later at indexing).
+    assert result.skipped == 2
 
 
 def test_parse_counts_and_uniqueness(parsed) -> None:
@@ -91,11 +103,12 @@ def test_keyword_ground_truth_over_every_entry(parsed, keywords, expected_dates)
     `_fuzzy_retrieve`: exactly the ground-truth entries match — declined Czech
     forms and the long buried mention included, filler and the look-alike
     negatives ('gotická', 'forgot') excluded."""
-    candidates = [k.lower() for k in keywords]
+    # Original casing on both sides, exactly like `_fuzzy_retrieve` (short cased
+    # forms like "GoT" match case-exactly; long forms fold internally).
     matched = {
         n["date"].isoformat()
         for n in parsed
-        if any(_keyword_hit(c, n["text"].lower()) for c in candidates)
+        if any(_keyword_hit(c, n["text"]) for c in keywords)
     }
     assert matched == set(expected_dates)
     assert not matched & set(KEYWORD_NEGATIVE_DATES)
