@@ -21,6 +21,7 @@ config in `constants.py`.
   - [2.6. Scattered entity mentions exceeded top-K](#26-scattered-entity-mentions-exceeded-top-k)
   - [2.7. Structured extraction returned None (no tool call)](#27-structured-extraction-returned-none-no-tool-call)
   - [2.8. Multi-day periods were inexpressible ("last week", "this winter") **\[re-index\]**](#28-multi-day-periods-were-inexpressible-last-week-this-winter-re-index)
+  - [2.9. Regex fallback guessed wrong filters](#29-regex-fallback-guessed-wrong-filters)
 - [3. Generation \& conversation](#3-generation--conversation)
   - [3.1. Cross-turn answer confusion (follow-ups drift to the wrong scope)](#31-cross-turn-answer-confusion-follow-ups-drift-to-the-wrong-scope)
   - [3.2. Oversized context silently truncated](#32-oversized-context-silently-truncated)
@@ -69,7 +70,7 @@ config in `constants.py`.
 - **Cause:** the prompt listed bare tag names with no meaning, and the schema allowed
   only **one** tag — but "skiing" spans two.
 - **Fix:** `constants.TAG_ALIASES` (Czech+English synonyms; a term can appear under
-  several tags) is fed to the extraction LLM **and** the regex fallback; `tags` is a
+  several tags) is fed to the extraction LLM; `tags` is a
   **list**; returned tags are clamped to actually-present tags. `_build_where()` OR-s
   multiple tags.
 
@@ -160,6 +161,26 @@ config in `constants.py`.
   invalid dates and swaps a reversed range. Old indexes lack `date_int` (a range
   filter matches nothing), so the app warns on startup until the backup is
   re-uploaded. Covered by range tests in `tests/test_mock_retrieval.py`.
+
+### 2.9. Regex fallback guessed wrong filters
+
+- **Symptom:** with structured extraction unavailable (§2.7), innocuous phrasings
+  produced confidently wrong scopes: modal "may" became `month=5` ("what may have
+  caused my knee pain?"), alias substrings over-matched ("run" ⊂ "brunch" → tag
+  `běh`), "last 2 weeks"
+  became `recent=2` *entries*, and bare "today"/"last month" matched that month/day
+  in **every** year (the year was never set).
+- **Cause:** ~100 lines of date/tag/count regexes tried to replicate the extraction
+  LLM's job. A wrongly guessed filter silently narrows retrieval to the wrong
+  entries — a fluent answer built on the wrong subset, strictly worse than a broad
+  one. The fallback also never filled `keywords`, so it could not match the
+  structured path anyway.
+- **Fix (deliberate simplification):** `_fallback_extract_query()` guesses **no
+  filters** — it keeps the raw question as the semantic query and only detects
+  overview intent (`breadth="all"` for summarize/overview/progression phrasings, so
+  §2.7's bare-overview case still routes right). Degraded mode is now predictable:
+  unfiltered semantic top-K, visible as such in the 🔎 route caption. `MONTH_MAP`
+  left with it. Covered by `tests/test_extract_fallback.py`.
 
 ## 3. Generation & conversation
 

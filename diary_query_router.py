@@ -1,7 +1,6 @@
 import datetime as dt
 import logging
 import re
-from typing import Literal
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -13,7 +12,6 @@ from rapidfuzz import fuzz
 from constants import (
     FETCH_ALL_MAX,
     FUZZY_MATCH_THRESHOLD,
-    MONTH_MAP,
     SEARCH_K,
     TAG_ALIASES,
 )
@@ -109,120 +107,17 @@ class DiaryQueryRouter:
         self.available_tags = available_tags or []
         self.k = k
 
-    def _fallback_extract_query(self, query: str, today: dt.date) -> DiarySearchQuery:
-        """Best-effort extraction when structured output is unavailable."""
-        q = query.lower()
-
-        year: int | None = None
-        month: int | None = None
-        day: int | None = None
-
-        # --- Relative date expressions ---
-        if "today last year" in q or ("today" in q and "last year" in q):
-            year = today.year - 1
-            month = today.month
-            day = today.day
-        else:
-            if "last year" in q:
-                year = today.year - 1
-            elif "this year" in q:
-                year = today.year
-
-            if "this month" in q:
-                month = today.month
-            elif "last month" in q:
-                last_month = today.month - 1
-                month = 12 if last_month == 0 else last_month
-                if year is None and today.month == 1:
-                    year = today.year - 1
-
-            if re.search(r"\btoday\b", q) and year is None:
-                month = today.month
-                day = today.day
-
-        # --- ISO date: 2025-05-18 ---
-        iso_match = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", q)
-        if iso_match:
-            year = int(iso_match.group(1))
-            month = int(iso_match.group(2))
-            day = int(iso_match.group(3))
-
-        # --- Month name + year: "may 2025", "in january 2024" ---
-        month_names_pattern = "|".join(MONTH_MAP.keys())
-        month_year_match = re.search(rf"\b({month_names_pattern})\s+(\d{{4}})\b", q)
-        if month_year_match:
-            month = MONTH_MAP[month_year_match.group(1)]
-            year = int(month_year_match.group(2))
-
-        # --- Year + month name: "2025 may" (less common but possible) ---
-        if month is None:
-            year_month_match = re.search(rf"\b(\d{{4}})\s+({month_names_pattern})\b", q)
-            if year_month_match:
-                year = int(year_month_match.group(1))
-                month = MONTH_MAP[year_month_match.group(2)]
-
-        # --- Standalone month name without year: "in march", "during june" ---
-        if month is None:
-            standalone_month = re.search(rf"\b({month_names_pattern})\b", q)
-            if standalone_month:
-                month = MONTH_MAP[standalone_month.group(1)]
-
-        # --- "Month day, year" or "Month day year": "May 18, 2025" ---
-        if day is None:
-            mdy_match = re.search(
-                rf"\b({month_names_pattern})\s+(\d{{1,2}})(?:st|nd|rd|th)?[,\s]+(\d{{4}})\b",
-                q,
-            )
-            if mdy_match:
-                month = MONTH_MAP[mdy_match.group(1)]
-                day = int(mdy_match.group(2))
-                year = int(mdy_match.group(3))
-
-        # --- "day(th) of Month (year)": "18th of may 2025" ---
-        if day is None:
-            dom_match = re.search(
-                rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({month_names_pattern})(?:\s+(\d{{4}}))?\b",
-                q,
-            )
-            if dom_match:
-                day = int(dom_match.group(1))
-                month = MONTH_MAP[dom_match.group(2)]
-                if dom_match.group(3):
-                    year = int(dom_match.group(3))
-
-        # --- Standalone 4-digit year if nothing else matched it ---
-        if year is None:
-            year_match = re.search(r"\b(20\d{2})\b", q)
-            if year_match:
-                year = int(year_match.group(1))
-
-        # --- Tag matching: match query against each tag's name + multilingual
-        # aliases; a query word like "skiing" can select several tags (lyže, skialp).
-        matched_tags: list[str] = []
-        for tag in self.available_tags:
-            aliases = [tag.lower(), *(a.lower() for a in TAG_ALIASES.get(tag, []))]
-            if any(alias in q for alias in aliases):
-                matched_tags.append(tag)
-
-        # --- Coarse intent heuristics ---
-        breadth: Literal["specific", "all"] = "specific"
-        if re.search(r"\b(summ|overview|recap|progress|trend|over time|evolv)", q):
-            breadth = "all"
-
-        recent: int | None = None
-        if m := re.search(r"\b(?:last|latest|recent|past)\s+(\d{1,3})\b", q):
-            recent = int(m.group(1))
-        elif re.search(r"\bmy\s+last\b", q):
-            recent = 1
-
+    def _fallback_extract_query(self, query: str) -> DiarySearchQuery:
+        """Degraded-but-predictable extraction for when structured output fails: no
+        filters (unfiltered semantic top-K over the raw question), keeping only the
+        overview intent so a bare "summarize my whole diary" still routes to
+        breadth="all". A previous regex extractor that guessed dates/tags/counts
+        here produced confidently mis-scoped answers instead (error_modes §2.9)."""
+        is_overview = re.search(
+            r"\b(summ|overview|recap|progress|trend|over time|evolv)", query.lower()
+        )
         return DiarySearchQuery(
-            query=query,
-            year=year,
-            month=month,
-            day=day,
-            tags=matched_tags,
-            recent=recent,
-            breadth=breadth,
+            query=query, breadth="all" if is_overview else "specific"
         )
 
     def extract(self, query: str, chat_history: list[BaseMessage]) -> DiarySearchQuery:
@@ -293,7 +188,7 @@ class DiaryQueryRouter:
         # `with_structured_output` can return None (the model emitted no tool call, e.g.
         # for a bare "summarize my whole diary") WITHOUT raising; fall back then too.
         if parsed is None:
-            parsed = self._fallback_extract_query(query, today)
+            parsed = self._fallback_extract_query(query)
 
         if not parsed.query or not parsed.query.strip():
             parsed.query = query
