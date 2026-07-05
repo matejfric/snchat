@@ -32,18 +32,14 @@ from generation import (
 from parser import documents_from_notes, parse_standard_notes
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARNING,  # third-party stays quiet without a per-library blocklist
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler()],
 )
+# Full diagnostics for our own modules only (e.g. the routed Chroma `where` filter).
+for _mod in ("__main__", "parser", "diary_query_router", "generation"):
+    logging.getLogger(_mod).setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-# Silence noisy third-party loggers
-logging.getLogger("chromadb").setLevel(logging.WARNING)
-logging.getLogger("watchdog").setLevel(logging.WARNING)
-logging.getLogger("python_multipart").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # langchain-chroma's default collection name — existing DBs were built with it and
 # the startup load path below opens it implicitly via Chroma(persist_directory=…).
