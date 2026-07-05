@@ -187,9 +187,10 @@ def test_scope_phrase_variants() -> None:
     assert _scope_phrase(q(query="ski", year=2026)) == "ski in 2026"
     assert _scope_phrase(q(query="", month=5)) == "in month 5"
     assert _scope_phrase(q(query="běh")) == "běh"
-    assert _scope_phrase(
-        q(query="ski", date_from="2025-12-01", date_to="2026-02-28")
-    ) == "ski from 2025-12-01 to 2026-02-28"
+    assert (
+        _scope_phrase(q(query="ski", date_from="2025-12-01", date_to="2026-02-28"))
+        == "ski from 2025-12-01 to 2026-02-28"
+    )
     assert _scope_phrase(q(query="", date_from="2026-03-01")) == "since 2026-03-01"
     assert _scope_phrase(q(query="x", date_to="2024-01-01")) == "x until 2024-01-01"
 

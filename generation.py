@@ -125,7 +125,6 @@ def _summarize(gen_llm: ChatOllama, joined: str, user_query: str, usage: dict) -
     compression into bullets — the reduce step can't recover what the map dropped
     (error_modes §3.5)."""
     resp = gen_llm.invoke(
-        "/no_think\n"
         "Summarize the key points of these chronologically-ordered diary entries "
         "as a few concise bullet points, keeping the [YYYY-MM-DD] date (and any "
         "tags) next to each point. Prioritize details relevant to the user's "
@@ -139,7 +138,6 @@ def _summarize(gen_llm: ChatOllama, joined: str, user_query: str, usage: dict) -
 def _reduce_input(user_query: str, combined: str, today: dt.date, scope: str) -> str:
     focus_line = f"Focus: {scope}.\n" if scope else ""
     return (
-        "/no_think\n"
         f"Today's date is {today.isoformat()}.\n"
         f"{focus_line}"
         "Below are dated summaries of diary entries, in chronological order. Combine "
@@ -190,7 +188,6 @@ def plan_generation(
         else "Answer the user's question using ONLY the diary excerpts below.\n"
     )
     system_text = (
-        "/no_think\n"
         "You are a compassionate personal assistant helping the user review their "
         "diary.\n"
         f"Today's date is {today.isoformat()}.\n"

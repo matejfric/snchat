@@ -2,7 +2,6 @@ import contextlib
 import datetime as dt
 import logging
 from pathlib import Path
-import re
 import tempfile
 
 import chromadb
@@ -337,18 +336,9 @@ if st.session_state.vectorstore is not None:
                 st.markdown(answer)
             else:
                 sink: dict = {}
-                # Streamed display may briefly show raw <think> on reasoning models,
-                # but /no_think keeps qwen quiet; we strip it from the stored text
-                # below.
                 answer = st.write_stream(stream_with_metrics(gen_llm, messages, sink))
                 for k, v in _usage_of(sink.get("message")).items():
                     usage[k] = usage.get(k, 0) + v
-
-            # Strip Qwen3 <think>...</think> blocks from the stored/replayed answer
-            if "<think>" in answer:
-                answer = re.sub(
-                    r"<think>.*?</think>", "", answer, flags=re.DOTALL
-                ).strip()
 
             cap = format_metrics(usage)
             if cap:
