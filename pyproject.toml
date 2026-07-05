@@ -16,6 +16,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
     "ruff>=0.15.13",
 ]
 
@@ -45,3 +46,10 @@ force-sort-within-sections = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", "app.py"]  # Streamlit UI; only exercised by live-Ollama E2E, not CI
+
+[tool.coverage.report]
+show_missing = true

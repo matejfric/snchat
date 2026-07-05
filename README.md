@@ -1,5 +1,7 @@
 # 📔 SNChat
 
+[![codecov](https://codecov.io/gh/matejfric/snchat/graph/badge.svg)](https://codecov.io/gh/matejfric/snchat)
+
 A fully **private, offline** chatbot for your personal diary exported from
 [Standard Notes](https://standardnotes.com/). Ask natural-language questions about your
 journal — by topic, tag, or time period — and get answers grounded in your own entries.

@@ -12,3 +12,7 @@ wheels/
 # Miscellaneous
 *.zip
 diary_vector_db/
+
+# Coverage
+coverage.xml
+.coverage
