@@ -218,6 +218,98 @@ config in `constants.py`.
   Long/multi-word forms are casefolded as before. Covered by
   `tests/test_keyword_hit.py`.
 
+### 2.12. One junk field voided the whole extraction (int `date_from` → silent fallback)
+
+- **Symptom:** "what was I up to today last year?" routed with **no** filters at
+  all — unfiltered semantic top-K — although the model had correctly extracted
+  `year=2025`. Surfaced by the answer-key replay (docs/diagnostics.md); the trace
+  showed the tool call `{"date_from": 2025, "date_to": 2025, "year": 2025, …}`.
+- **Cause:** the date-range fields added in §2.8 are `str | None`, and gemma4
+  sometimes fills them with bare integers. One invalid field fails pydantic
+  validation of the WHOLE tool call, `with_structured_output` raises, and
+  extract() drops to the no-filter fallback (§2.9) — every *valid* filter in the
+  same call is silently lost. A regression risk of any schema growth.
+- **Fix:** a lenient `mode="before"` validator on the two date-range fields
+  degrades a non-string value to `None` so the rest of the call survives; the
+  extraction prompt additionally pins date_from/date_to to yyyy-mm-dd strings.
+  Deliberately scoped to the observed failure — junk in other fields still
+  falls back predictably (§2.9), and the answer-key replay
+  (docs/diagnostics.md) will surface it if it ever happens. Covered by
+  `tests/test_extract_fallback.py` with the verbatim traced payload.
+
+### 2.13. Verbatim typed dates under-parsed ("on 2025-05-18" → `year=2025` only)
+
+- **Symptom:** "what did I do on 2025-05-18?" routed as year-2025 similarity
+  top-K — the Pálava entry itself wasn't retrieved, filler was.
+- **Cause:** the model under-parses a literal ISO date into just the year
+  (attention diluted by the §2.8 range instructions). Yet a `yyyy-mm-dd` typed
+  by the user needs no interpretation at all — trusting the LLM here is trusting
+  it to copy.
+- **Fix:** deterministic backfill in extract() post-processing: exactly one
+  valid ISO date found verbatim in the question sets year+month+day — but ONLY
+  when extraction produced no day-precision filter, so a correctly extracted
+  "the week after 2025-05-18" range is never overwritten. Applies to the
+  fallback path too (a literal date is copied, not guessed — §2.9's rule is
+  about guessing). A single-day range (`date_from == date_to`, how the model
+  answers "today last year") is likewise canonicalized to year/month/day.
+  Covered by `tests/test_extract_fallback.py`.
+
+### 2.14. Cross-lingual entity expansion hallucinated ("The Witcher" → "Věštík")
+
+- **Symptom:** "what did I think of the Witcher books?" retrieved 1 of 4
+  mentions — only the entry with the English name. The trace showed keywords
+  `["The Witcher", "Witcher", "Věštík", "Sapiekowski"]`: the Czech title
+  "Zaklínač" is a knowledge gap for a local 12B, and no prompt fixes missing
+  knowledge; every declined Czech mention was silently lost.
+- **Documented limitation (no fix):** keyword-branch recall depends entirely on
+  the LLM's own variant expansion. A curated entity glossary (a `TAG_ALIASES`
+  counterpart) was considered and rejected — hand-listing every book/series/
+  person defeats the point of using an LLM, and reduced recall is accepted
+  instead. The miss is at least visible: the 🔎 route caption shows the exact
+  keywords searched, so a hallucinated variant can be spotted and the question
+  re-asked with the native name ("what did I think of Zaklínač?"). The replay
+  answer key asserts only the reliably-matched English-form entry.
+
+### 2.15. Relative single-day date under-filled to year-only ("today last year" → year)
+
+- **Symptom:** "what was I up to today last year?" (today 2026-07-05) routed as
+  `year=2025` with no month/day — 93 matches > `FETCH_ALL_MAX` → year-wide
+  similarity top-K, so the actual July-5 entry was never retrieved. The model
+  *had* resolved the day correctly in its prose `query` ("What was I doing on
+  July 5th, 2025?") but mirrored only the year into the structured fields.
+- **Cause:** a third variant of this same query after §2.12 (int range) and
+  §2.13 (single-day range). The omnibus extraction juggles the semantic query
+  plus eight fields, the tag glossary and the range rules; date attention is
+  diluted (§2.13) and the day/month drop. The prompt already spells out "'today
+  last year' means year=… month=… day=…" *and* "fill year AND month AND day
+  together" — prompting is maxed and the model still under-fills. It can't be
+  patched deterministically the way §2.12/§2.13 were: `year=2025` alone is *also*
+  the correct output for "in 2025", so the intent lives only in the question, and
+  a phrase matcher on the question is out — the app is **multilingual** (a
+  literal-phrase matcher only works for hand-listed languages, the same objection
+  as the curated glossary in §2.14).
+- **Fix:** a **focused second extraction call** (`_resolve_date()` →
+  `ResolvedDate`) that does ONLY date resolution — nothing to dilute its
+  attention — returning a precision-honest ISO string (`yyyy` / `yyyy-mm` /
+  `yyyy-mm-dd`); `_iso_precision()` backfills whichever of year/month/day it
+  carries. It is **gated on the structured output, not the question text** (year
+  set, nothing finer), so it stays language-agnostic and fires rarely: it runs
+  *after* the deterministic backfills (a typed literal date, §2.13, needs no
+  call), a genuine "in 2025" trips it but the specialist just re-confirms the
+  year (no-op), and no-date/thematic questions never set a year so never fire. A
+  failed / unparseable / null specialist answer degrades to the year-only scope —
+  predictable, never a crash or a wrong narrowing. This is a reliability bet on
+  the same 12B, so it's validated through the answer-key replay
+  (docs/diagnostics.md) on the `today-last-year` case; if the focused call proves
+  unreliable there, the fallback is to accept it as a documented limitation like
+  §2.14. Covered by `tests/test_extract_fallback.py`.
+- **Gotcha — the specialist's `date` field must be REQUIRED:** a first cut made it
+  optional (`str | None = None`); gemma4 then emitted **no tool call at all**
+  (§2.7) and `with_structured_output` returned None for *every* question — the
+  replay showed `year=2025 month=None day=None` unchanged, with no specialist
+  effect. A required `date` (with a `"none"` sentinel for the no-date case) forces
+  the call, exactly as the omnibus schema's required `query` field always does.
+
 ## 3. Generation & conversation
 
 ### 3.1. Cross-turn answer confusion (follow-ups drift to the wrong scope)

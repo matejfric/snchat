@@ -190,7 +190,7 @@ def plan_generation(
     system_text = (
         "You are a compassionate personal assistant helping the user review their "
         "diary.\n"
-        f"Today's date is {today.isoformat()}.\n"
+        f"Today's date is {today.isoformat()} [YYYY-MM-DD].\n"
         f"{anchor}"
         "The entries are in CHRONOLOGICAL order. Answer the question directly; if "
         "the user asked for an overview, summary, recap, or progression, give a "

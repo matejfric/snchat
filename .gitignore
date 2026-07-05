@@ -13,6 +13,9 @@ wheels/
 *.zip
 diary_vector_db/
 
+# Dev diagnostics — raw diary questions + answers, never commit (docs/diagnostics.md)
+diagnostics/
+
 # Coverage
 coverage.xml
 .coverage

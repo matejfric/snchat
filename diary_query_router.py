@@ -15,7 +15,7 @@ from constants import (
     SEARCH_K,
     TAG_ALIASES,
 )
-from diary_search_query import DiarySearchQuery
+from diary_search_query import DiarySearchQuery, ResolvedDate
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,28 @@ def _date_int(iso: str | None) -> int | None:
         return int(dt.date.fromisoformat(iso).strftime("%Y%m%d"))
     except (TypeError, ValueError):
         return None
+
+
+def _iso_precision(s: str) -> tuple[int, int | None, int | None] | None:
+    """Parse a precision-honest ISO string from the date specialist into
+    (year, month, day), with None for components the string omits: '2025' ->
+    (2025, None, None), '2025-07' -> (2025, 7, None), '2025-07-05' -> (2025, 7, 5).
+    None if malformed or not a real date. Format parsing, not language matching —
+    safe for a multilingual app (see the multilingual-routing note)."""
+    parts = s.strip().split("-")
+    if not 1 <= len(parts) <= 3:
+        return None
+    try:
+        nums = [int(p) for p in parts]
+        y, m, d = (nums + [1, 1])[:3]  # fill absent parts with 1 only to validate
+        dt.date(y, m, d)
+    except ValueError:
+        return None
+    return (
+        nums[0],
+        nums[1] if len(nums) > 1 else None,
+        nums[2] if len(nums) > 2 else None,
+    )
 
 
 def _build_where(
@@ -139,6 +161,52 @@ class DiaryQueryRouter:
             query=query, breadth="all" if is_overview else "specific"
         )
 
+    def _resolve_date(
+        self, query: str, chat_history: list[BaseMessage], today: dt.date
+    ) -> tuple[int, int | None, int | None] | None:
+        """Focused fallback for a year-only under-fill (error_modes §2.15): ask the
+        LLM for ONLY the date the question refers to, stripped of the omnibus call's
+        competing fields/instructions that dilute its date attention (§2.13).
+        Multilingual by construction — the LLM resolves the phrase in any language;
+        the router gates the call on the structured output, never the question text.
+        Returns (year, month, day) at the model's precision, or None on
+        no-date/failure/unparseable output (caller then keeps the year-only scope)."""
+        structured_llm = self.llm.with_structured_output(
+            ResolvedDate, method="function_calling"
+        )
+        system_msg = (
+            f"Today is {today.isoformat()}, a {today.strftime('%A')}. The user asks "
+            "about their personal diary, in any language. Give the ONE calendar date "
+            "or period the question refers to, resolving relative expressions against "
+            f"today — e.g. 'today last year' is {today.year - 1}-{today:%m-%d}, 'this "
+            f"month' is {today:%Y-%m}. Use ISO precision that MATCHES the question: "
+            "yyyy-mm-dd for a day, yyyy-mm for a whole month, yyyy for a whole year — "
+            'add no finer precision than it implies. Use "none" if the question names '
+            "no specific date."
+        )
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_msg),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}"),
+            ]
+        )
+        try:
+            result = (prompt | structured_llm).invoke(
+                {"input": query, "chat_history": chat_history}
+            )
+        except Exception as exc:
+            logger.warning("Date specialist call failed: %s", exc)
+            return None
+        # None: model emitted no tool call (§2.7). "none": the schema's no-date
+        # sentinel. Both mean "no date to backfill".
+        if result is None or result.date.strip().lower() == "none":
+            return None
+        parsed = _iso_precision(result.date)
+        if parsed is None:
+            logger.info("Date specialist returned unparseable date %r", result.date)
+        return parsed
+
     def extract(self, query: str, chat_history: list[BaseMessage]) -> DiarySearchQuery:
         """Extract mode + filters, resolving follow-ups against the chat history."""
         today = dt.date.today()
@@ -176,7 +244,10 @@ class DiaryQueryRouter:
             "previous Monday through Sunday, 'this winter' spans December 1 through "
             "the end of February ACROSS the year boundary, 'between March and May "
             "2026' means 2026-03-01 to 2026-05-31; 'since March' sets only date_from. "
-            "Use year/month/day (never a range) for a single day, month, or year. "
+            "date_from/date_to must be yyyy-mm-dd STRINGS — never a bare year or "
+            "number. Use year/month/day (never a range) for a single day, month, or "
+            "year; when the question names ONE exact day ('on 2025-05-18', 'today "
+            "last year'), fill year AND month AND day together. "
             "Always provide a semantic search query. Only set "
             "date/tag filters when the user explicitly or implicitly refers to a time "
             "period or tag. Set 'recent' to N only when the user asks for a specific "
@@ -207,29 +278,83 @@ class DiaryQueryRouter:
         # `with_structured_output` can return None (the model emitted no tool call, e.g.
         # for a bare "summarize my whole diary") WITHOUT raising; fall back then too.
         if parsed is None:
+            logger.info("Extraction produced no tool call; using no-filter fallback")
             parsed = self._fallback_extract_query(query)
 
         if not parsed.query or not parsed.query.strip():
+            logger.debug("Empty semantic query; backfilled from the raw question")
             parsed.query = query
 
         # Normalize returned tags — exact value, re-cased tag, or an echoed alias
         # ("skiing" fans out to lyže+skialp) — then drop hallucinated leftovers,
         # de-duplicated in order. An exact-match clamp may silently lose the filter
         # when the model echoed an alias (error_modes §2.10).
+        raw_tags = list(parsed.tags)
         resolved = [
             tag
             for returned in parsed.tags
             for tag in self._alias_to_tags.get(returned.strip().casefold(), [])
         ]
         parsed.tags = list(dict.fromkeys(resolved))
+        if parsed.tags != raw_tags:
+            logger.info("Normalized tags %s -> %s", raw_tags, parsed.tags)
 
         # Normalize the date range: drop invalid dates, swap a reversed range.
         if parsed.date_from and _date_int(parsed.date_from) is None:
+            logger.info("Dropped invalid date_from=%r", parsed.date_from)
             parsed.date_from = None
         if parsed.date_to and _date_int(parsed.date_to) is None:
+            logger.info("Dropped invalid date_to=%r", parsed.date_to)
             parsed.date_to = None
         if parsed.date_from and parsed.date_to and parsed.date_from > parsed.date_to:
+            logger.info(
+                "Swapped reversed range %s..%s", parsed.date_from, parsed.date_to
+            )
             parsed.date_from, parsed.date_to = parsed.date_to, parsed.date_from
+
+        # Canonicalize a single-day "range" (the model answers e.g. "today last
+        # year" with date_from == date_to) to year/month/day, so the scope
+        # phrase, route caption and filters all see the point lookup it is.
+        if parsed.date_from and parsed.date_from == parsed.date_to:
+            logger.info("Collapsed single-day range %s to y/m/d", parsed.date_from)
+            d = dt.date.fromisoformat(parsed.date_from)
+            parsed.year, parsed.month, parsed.day = d.year, d.month, d.day
+            parsed.date_from = parsed.date_to = None
+
+        # One ISO date typed verbatim in the question is authoritative — the
+        # model sometimes returns just its year (error_modes §2.13). Only when
+        # extraction produced no day-precision filter, so a correct range
+        # ("the week after 2025-05-18") is never overwritten; applies to the
+        # fallback path too (a literal date is copied, not guessed).
+        if not (parsed.day or parsed.date_from or parsed.date_to):
+            typed = {
+                m
+                for m in re.findall(r"\b\d{4}-\d{2}-\d{2}\b", query)
+                if _date_int(m) is not None
+            }
+            if len(typed) == 1:
+                d = dt.date.fromisoformat(typed.pop())
+                parsed.year, parsed.month, parsed.day = d.year, d.month, d.day
+                logger.info("Backfilled y/m/d from verbatim date %s", d.isoformat())
+
+        # Year-only under-fill: the model resolved a specific day/month in its prose
+        # `query` but mirrored only the year into the fields (error_modes §2.15).
+        # A focused second call recovers the precision. Gated on the STRUCTURED
+        # output (year set, nothing finer) so it stays language-agnostic and fires
+        # rarely — a true "in 2025" also trips it but the specialist just re-confirms
+        # the year (no-op). Runs after the deterministic backfills above so a typed
+        # literal date needs no call.
+        if parsed.year and not (
+            parsed.month or parsed.day or parsed.date_from or parsed.date_to
+        ):
+            resolved = self._resolve_date(query, chat_history, today)
+            if resolved and resolved != (parsed.year, parsed.month, parsed.day):
+                logger.info(
+                    "Date specialist refined year-only %s -> %s",
+                    parsed.year,
+                    resolved,
+                )
+                parsed.year, parsed.month, parsed.day = resolved
 
         logger.info(
             "Routed query=%r year=%s month=%s day=%s range=%s..%s tags=%s "

@@ -1,11 +1,17 @@
 # Query understanding & retrieval
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class DiarySearchQuery(BaseModel):
-    """Extract search parameters from the user's question about their diary."""
+    """Extract search parameters from the user's question about their diary.
+
+    The lenient date validator degrades a junk range value from the extraction
+    LLM (e.g. `date_from: 2025` emitted as a bare integer) to None. Without it
+    one bad optional field fails validation of the WHOLE tool call and every
+    valid filter in it is silently lost to the no-filter fallback
+    (error_modes §2.12)."""
 
     query: str = Field(
         description="The semantic search text to find relevant diary entries"
@@ -59,5 +65,36 @@ class DiarySearchQuery(BaseModel):
             "'all' when the user wants an overview, summary, recap, trend, or "
             "progression across the WHOLE filtered scope (e.g. 'summarize my "
             "bouldering progression'). 'specific' for point lookups (the default)."
+        ),
+    )
+
+    @field_validator("date_from", "date_to", mode="before")
+    @classmethod
+    def _lenient_date(cls, v):
+        # Bare years/numbers are junk here; invalid ISO *strings* are dropped
+        # later by the router's range normalization.
+        return v if isinstance(v, str) else None
+
+
+class ResolvedDate(BaseModel):
+    """Output of a focused second extraction call that does ONLY date resolution.
+
+    The omnibus extraction sometimes resolves a specific day in its prose `query`
+    but mirrors only the year into the fields ("today last year" -> year=2025,
+    month/day dropped — error_modes §2.15). When that under-fill is detected, the
+    router asks for just the date; a single field can't be half-filled the way
+    three independent year/month/day fields can.
+
+    `date` is REQUIRED (with a "none" sentinel), not optional: an all-optional
+    single-field schema makes the local model emit no tool call at all (§2.7),
+    so `with_structured_output` returned None every time."""
+
+    date: str = Field(
+        description=(
+            "The ONE calendar date or period the question refers to, as ISO and "
+            "PRECISION-HONEST: yyyy-mm-dd for an exact day, yyyy-mm for a whole "
+            "month, yyyy for a whole year. Do NOT add finer precision than the "
+            "question implies (a whole-year question stays yyyy). The literal "
+            '"none" if the question names no specific date.'
         ),
     )
