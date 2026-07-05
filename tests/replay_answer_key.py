@@ -181,13 +181,15 @@ CASES = [
     Case(
         "today-last-year",
         "what was I up to today last year?",
-        # Only the year is guaranteed for a RELATIVE single-day phrase: gemma4
-        # resolves the date but flip-flops on which fields carry it (full
-        # y/m/d, a single-day range, or year-only). The §2.12 validator and
-        # the single-day-range collapse make year the reliable floor; only a
-        # date typed verbatim guarantees day precision (§2.13). No dates
-        # expectation either: filler-grid coverage depends on the run date.
-        route={"year": TODAY.year - 1},
+        # Full y/m/d is the target: gemma4 flip-flops on which fields carry a
+        # RELATIVE single-day date (full y/m/d, a single-day range, or year-only),
+        # so the §2.12 validator, the single-day-range collapse, and — when it
+        # under-fills to year-only — the focused date specialist (§2.15) all
+        # converge it back to the exact day. This case is what validates that
+        # specialist: a bet on the same 12B, so a failure here is the signal to
+        # fall back to a documented limitation. No dates expectation: filler-grid
+        # coverage depends on the run date.
+        route={"year": TODAY.year - 1, "month": TODAY.month, "day": TODAY.day},
     ),
 ]
 

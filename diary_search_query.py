@@ -74,3 +74,27 @@ class DiarySearchQuery(BaseModel):
         # Bare years/numbers are junk here; invalid ISO *strings* are dropped
         # later by the router's range normalization.
         return v if isinstance(v, str) else None
+
+
+class ResolvedDate(BaseModel):
+    """Output of a focused second extraction call that does ONLY date resolution.
+
+    The omnibus extraction sometimes resolves a specific day in its prose `query`
+    but mirrors only the year into the fields ("today last year" -> year=2025,
+    month/day dropped — error_modes §2.15). When that under-fill is detected, the
+    router asks for just the date; a single field can't be half-filled the way
+    three independent year/month/day fields can.
+
+    `date` is REQUIRED (with a "none" sentinel), not optional: an all-optional
+    single-field schema makes the local model emit no tool call at all (§2.7),
+    so `with_structured_output` returned None every time."""
+
+    date: str = Field(
+        description=(
+            "The ONE calendar date or period the question refers to, as ISO and "
+            "PRECISION-HONEST: yyyy-mm-dd for an exact day, yyyy-mm for a whole "
+            "month, yyyy for a whole year. Do NOT add finer precision than the "
+            "question implies (a whole-year question stays yyyy). The literal "
+            '"none" if the question names no specific date.'
+        ),
+    )

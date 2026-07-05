@@ -15,8 +15,8 @@ from unittest.mock import MagicMock
 
 from langchain_core.runnables import RunnableLambda
 
-from diary_query_router import DiaryQueryRouter
-from diary_search_query import DiarySearchQuery
+from diary_query_router import DiaryQueryRouter, _iso_precision
+from diary_search_query import DiarySearchQuery, ResolvedDate
 
 
 def _router_returning(
@@ -33,6 +33,24 @@ def _router_returning(
         available_tags=available_tags or [],
         tag_aliases=tag_aliases,
     )
+
+
+def _router_with_specialist(omnibus, date_out):
+    """A router whose omnibus extraction yields `omnibus` and whose date-specialist
+    call yields ResolvedDate(date=date_out) — dispatched by the requested schema,
+    since extract() and _resolve_date() call with_structured_output separately.
+    `date_out=None` simulates the model emitting no tool call (§2.7)."""
+    llm = MagicMock()
+
+    def _dispatch(schema, **_):
+        if schema is DiarySearchQuery:
+            value = omnibus
+        else:
+            value = None if date_out is None else ResolvedDate(date=date_out)
+        return RunnableLambda(lambda _: value)
+
+    llm.with_structured_output.side_effect = _dispatch
+    return DiaryQueryRouter(vectorstore=None, llm=llm, available_tags=[])
 
 
 def test_extract_falls_back_when_structured_output_returns_none() -> None:
@@ -177,3 +195,89 @@ def test_extract_drops_invalid_range_dates() -> None:
     parsed = router.extract("q", [])
     assert parsed.date_from is None
     assert parsed.date_to is None
+
+
+def test_year_only_underfill_recovered_by_date_specialist() -> None:
+    # The observed §2.15 failure: "what was I up to today last year?" — the model
+    # resolves the day in its prose query but mirrors only year=2025 into the
+    # fields. The gated focused call recovers month+day.
+    router = _router_with_specialist(
+        DiarySearchQuery(query="What was I doing on July 5th, 2025?", year=2025),
+        "2025-07-05",
+    )
+    parsed = router.extract("what was I up to today last year?", [])
+    assert (parsed.year, parsed.month, parsed.day) == (2025, 7, 5)
+
+
+def test_date_specialist_applies_month_precision() -> None:
+    # Precision-honest: a month-level under-fill recovers year+month, not a day.
+    router = _router_with_specialist(DiarySearchQuery(query="x", year=2025), "2025-07")
+    parsed = router.extract("what did I do in July last year?", [])
+    assert (parsed.year, parsed.month, parsed.day) == (2025, 7, None)
+
+
+def test_date_specialist_year_precision_is_a_noop() -> None:
+    # A genuine whole-year question also trips the gate; the specialist returns
+    # just the year, so the scope is unchanged (the harmless-firing case).
+    router = _router_with_specialist(DiarySearchQuery(query="x", year=2025), "2025")
+    parsed = router.extract("what did I do in 2025?", [])
+    assert (parsed.year, parsed.month, parsed.day) == (2025, None, None)
+
+
+def test_date_specialist_not_called_when_date_already_specific() -> None:
+    # Gate reads the structured output: month already set -> no wasted second call.
+    calls: list = []
+    llm = MagicMock()
+
+    def _dispatch(schema, **_):
+        if schema is DiarySearchQuery:
+            return RunnableLambda(
+                lambda _: DiarySearchQuery(query="x", year=2025, month=5)
+            )
+        calls.append(schema)
+        return RunnableLambda(lambda _: ResolvedDate(date="2020-01-01"))
+
+    llm.with_structured_output.side_effect = _dispatch
+    router = DiaryQueryRouter(vectorstore=None, llm=llm, available_tags=[])
+    parsed = router.extract("what did I do in May 2025?", [])
+    assert (parsed.year, parsed.month, parsed.day) == (2025, 5, None)
+    assert calls == []
+
+
+def test_date_specialist_degradations_keep_year_only() -> None:
+    # Each failure path must degrade to the year-only scope, never crash or wrongly
+    # narrow: a non-ISO answer, the "none" no-date sentinel, and no tool call at
+    # all (None result, the §2.7 quirk that required the field to be mandatory).
+    for out in ("July 5 2025", "none", None):
+        router = _router_with_specialist(DiarySearchQuery(query="x", year=2025), out)
+        parsed = router.extract("what was I up to today last year?", [])
+        assert (parsed.year, parsed.month, parsed.day) == (2025, None, None)
+
+
+def test_date_specialist_failure_keeps_year_only() -> None:
+    def _boom(_):
+        raise RuntimeError("boom")
+
+    llm = MagicMock()
+
+    def _dispatch(schema, **_):
+        if schema is DiarySearchQuery:
+            return RunnableLambda(lambda _: DiarySearchQuery(query="x", year=2025))
+        return RunnableLambda(_boom)
+
+    llm.with_structured_output.side_effect = _dispatch
+    router = DiaryQueryRouter(vectorstore=None, llm=llm, available_tags=[])
+    parsed = router.extract("what was I up to today last year?", [])
+    assert (parsed.year, parsed.month, parsed.day) == (2025, None, None)
+
+
+def test_iso_precision_parsing() -> None:
+    assert _iso_precision("2025") == (2025, None, None)
+    assert _iso_precision("2025-07") == (2025, 7, None)
+    assert _iso_precision("2025-07-05") == (2025, 7, 5)
+    assert _iso_precision(" 2025-7-5 ") == (2025, 7, 5)  # non-padded, whitespace
+    assert _iso_precision("2025-13") is None  # month out of range
+    assert _iso_precision("2025-02-30") is None  # day out of range for month
+    assert _iso_precision("July 5 2025") is None  # not ISO
+    assert _iso_precision("") is None
+    assert _iso_precision("2025-07-05-01") is None  # too many components

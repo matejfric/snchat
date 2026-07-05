@@ -15,7 +15,7 @@ from constants import (
     SEARCH_K,
     TAG_ALIASES,
 )
-from diary_search_query import DiarySearchQuery
+from diary_search_query import DiarySearchQuery, ResolvedDate
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,28 @@ def _date_int(iso: str | None) -> int | None:
         return int(dt.date.fromisoformat(iso).strftime("%Y%m%d"))
     except (TypeError, ValueError):
         return None
+
+
+def _iso_precision(s: str) -> tuple[int, int | None, int | None] | None:
+    """Parse a precision-honest ISO string from the date specialist into
+    (year, month, day), with None for components the string omits: '2025' ->
+    (2025, None, None), '2025-07' -> (2025, 7, None), '2025-07-05' -> (2025, 7, 5).
+    None if malformed or not a real date. Format parsing, not language matching —
+    safe for a multilingual app (see the multilingual-routing note)."""
+    parts = s.strip().split("-")
+    if not 1 <= len(parts) <= 3:
+        return None
+    try:
+        nums = [int(p) for p in parts]
+        y, m, d = (nums + [1, 1])[:3]  # fill absent parts with 1 only to validate
+        dt.date(y, m, d)
+    except ValueError:
+        return None
+    return (
+        nums[0],
+        nums[1] if len(nums) > 1 else None,
+        nums[2] if len(nums) > 2 else None,
+    )
 
 
 def _build_where(
@@ -138,6 +160,52 @@ class DiaryQueryRouter:
         return DiarySearchQuery(
             query=query, breadth="all" if is_overview else "specific"
         )
+
+    def _resolve_date(
+        self, query: str, chat_history: list[BaseMessage], today: dt.date
+    ) -> tuple[int, int | None, int | None] | None:
+        """Focused fallback for a year-only under-fill (error_modes §2.15): ask the
+        LLM for ONLY the date the question refers to, stripped of the omnibus call's
+        competing fields/instructions that dilute its date attention (§2.13).
+        Multilingual by construction — the LLM resolves the phrase in any language;
+        the router gates the call on the structured output, never the question text.
+        Returns (year, month, day) at the model's precision, or None on
+        no-date/failure/unparseable output (caller then keeps the year-only scope)."""
+        structured_llm = self.llm.with_structured_output(
+            ResolvedDate, method="function_calling"
+        )
+        system_msg = (
+            f"Today is {today.isoformat()}, a {today.strftime('%A')}. The user asks "
+            "about their personal diary, in any language. Give the ONE calendar date "
+            "or period the question refers to, resolving relative expressions against "
+            f"today — e.g. 'today last year' is {today.year - 1}-{today:%m-%d}, 'this "
+            f"month' is {today:%Y-%m}. Use ISO precision that MATCHES the question: "
+            "yyyy-mm-dd for a day, yyyy-mm for a whole month, yyyy for a whole year — "
+            'add no finer precision than it implies. Use "none" if the question names '
+            "no specific date."
+        )
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_msg),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}"),
+            ]
+        )
+        try:
+            result = (prompt | structured_llm).invoke(
+                {"input": query, "chat_history": chat_history}
+            )
+        except Exception as exc:
+            logger.warning("Date specialist call failed: %s", exc)
+            return None
+        # None: model emitted no tool call (§2.7). "none": the schema's no-date
+        # sentinel. Both mean "no date to backfill".
+        if result is None or result.date.strip().lower() == "none":
+            return None
+        parsed = _iso_precision(result.date)
+        if parsed is None:
+            logger.info("Date specialist returned unparseable date %r", result.date)
+        return parsed
 
     def extract(self, query: str, chat_history: list[BaseMessage]) -> DiarySearchQuery:
         """Extract mode + filters, resolving follow-ups against the chat history."""
@@ -268,6 +336,25 @@ class DiaryQueryRouter:
                 d = dt.date.fromisoformat(typed.pop())
                 parsed.year, parsed.month, parsed.day = d.year, d.month, d.day
                 logger.info("Backfilled y/m/d from verbatim date %s", d.isoformat())
+
+        # Year-only under-fill: the model resolved a specific day/month in its prose
+        # `query` but mirrored only the year into the fields (error_modes §2.15).
+        # A focused second call recovers the precision. Gated on the STRUCTURED
+        # output (year set, nothing finer) so it stays language-agnostic and fires
+        # rarely — a true "in 2025" also trips it but the specialist just re-confirms
+        # the year (no-op). Runs after the deterministic backfills above so a typed
+        # literal date needs no call.
+        if parsed.year and not (
+            parsed.month or parsed.day or parsed.date_from or parsed.date_to
+        ):
+            resolved = self._resolve_date(query, chat_history, today)
+            if resolved and resolved != (parsed.year, parsed.month, parsed.day):
+                logger.info(
+                    "Date specialist refined year-only %s -> %s",
+                    parsed.year,
+                    resolved,
+                )
+                parsed.year, parsed.month, parsed.day = resolved
 
         logger.info(
             "Routed query=%r year=%s month=%s day=%s range=%s..%s tags=%s "

@@ -270,6 +270,46 @@ config in `constants.py`.
   re-asked with the native name ("what did I think of Zaklínač?"). The replay
   answer key asserts only the reliably-matched English-form entry.
 
+### 2.15. Relative single-day date under-filled to year-only ("today last year" → year)
+
+- **Symptom:** "what was I up to today last year?" (today 2026-07-05) routed as
+  `year=2025` with no month/day — 93 matches > `FETCH_ALL_MAX` → year-wide
+  similarity top-K, so the actual July-5 entry was never retrieved. The model
+  *had* resolved the day correctly in its prose `query` ("What was I doing on
+  July 5th, 2025?") but mirrored only the year into the structured fields.
+- **Cause:** a third variant of this same query after §2.12 (int range) and
+  §2.13 (single-day range). The omnibus extraction juggles the semantic query
+  plus eight fields, the tag glossary and the range rules; date attention is
+  diluted (§2.13) and the day/month drop. The prompt already spells out "'today
+  last year' means year=… month=… day=…" *and* "fill year AND month AND day
+  together" — prompting is maxed and the model still under-fills. It can't be
+  patched deterministically the way §2.12/§2.13 were: `year=2025` alone is *also*
+  the correct output for "in 2025", so the intent lives only in the question, and
+  a phrase matcher on the question is out — the app is **multilingual** (a
+  literal-phrase matcher only works for hand-listed languages, the same objection
+  as the curated glossary in §2.14).
+- **Fix:** a **focused second extraction call** (`_resolve_date()` →
+  `ResolvedDate`) that does ONLY date resolution — nothing to dilute its
+  attention — returning a precision-honest ISO string (`yyyy` / `yyyy-mm` /
+  `yyyy-mm-dd`); `_iso_precision()` backfills whichever of year/month/day it
+  carries. It is **gated on the structured output, not the question text** (year
+  set, nothing finer), so it stays language-agnostic and fires rarely: it runs
+  *after* the deterministic backfills (a typed literal date, §2.13, needs no
+  call), a genuine "in 2025" trips it but the specialist just re-confirms the
+  year (no-op), and no-date/thematic questions never set a year so never fire. A
+  failed / unparseable / null specialist answer degrades to the year-only scope —
+  predictable, never a crash or a wrong narrowing. This is a reliability bet on
+  the same 12B, so it's validated through the answer-key replay
+  (docs/diagnostics.md) on the `today-last-year` case; if the focused call proves
+  unreliable there, the fallback is to accept it as a documented limitation like
+  §2.14. Covered by `tests/test_extract_fallback.py`.
+- **Gotcha — the specialist's `date` field must be REQUIRED:** a first cut made it
+  optional (`str | None = None`); gemma4 then emitted **no tool call at all**
+  (§2.7) and `with_structured_output` returned None for *every* question — the
+  replay showed `year=2025 month=None day=None` unchanged, with no specialist
+  effect. A required `date` (with a `"none"` sentinel for the no-date case) forces
+  the call, exactly as the omnibus schema's required `query` field always does.
+
 ## 3. Generation & conversation
 
 ### 3.1. Cross-turn answer confusion (follow-ups drift to the wrong scope)
