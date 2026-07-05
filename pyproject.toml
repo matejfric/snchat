@@ -1,7 +1,7 @@
 [project]
 name = "snchat"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fully local, offline RAG chat over a Standard Notes diary export (Streamlit + ChromaDB + Ollama)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
