@@ -27,12 +27,8 @@ ENABLED = os.environ.get("SNCHAT_TRACE") == "1"
 
 # Anchored to this file's directory (the repo root), NOT the CWD, so the app
 # (writer) and any reader agree on one location regardless of where each is
-# launched from. Overridable via env (and, in tests, by patching the global).
-TRACE_PATH = Path(
-    os.environ.get(
-        "SNCHAT_TRACE_PATH", Path(__file__).parent / "diagnostics" / "traces.jsonl"
-    )
-)
+# launched from (tests patch this global directly).
+TRACE_PATH = Path(__file__).parent / "diagnostics" / "traces.jsonl"
 
 # Loggers whose records are captured as `events` on the active turn — the exact
 # routing narration (chosen strategy + counts, the where-clause) that the
@@ -98,9 +94,29 @@ class _Turn:
             return
         self.rec[key] = value
 
+    def set_retrieval(self, docs) -> None:
+        """Record the retrieved entries' count + full text (date/tags/text).
+        Duck-typed over LangChain Documents so tracing stays import-pure; the one
+        place the trace's retrieval-doc shape is defined (app + replay share it)."""
+        self.set("snchat.retrieval.count", len(docs))
+        self.set(
+            "snchat.retrieval.docs",
+            [
+                {
+                    "date": d.metadata.get("date_str", "?"),
+                    "tags": d.metadata.get("tags") or [],
+                    "text": d.page_content,
+                }
+                for d in docs
+            ],
+        )
+
 
 class _NoopTurn:
     def set(self, key: str, value) -> None:
+        pass
+
+    def set_retrieval(self, docs) -> None:
         pass
 
 

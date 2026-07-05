@@ -39,10 +39,24 @@ cat diagnostics/traces.jsonl | jq -c '{q: ."input.value", tags: ."snchat.extract
 rm diagnostics/traces.jsonl        # clear between sessions (append-only, no rotation)
 ```
 
-The records are the shared contract for two future consumers — a browser
-viewer (sidebar session > question, per-question mermaid diagram) and a
-headless LLM-as-judge — both reading the same file via
-`tracing.read_turns()`. Neither is built yet.
+The records are the shared contract for two consumers — the HTML viewer below
+and a future headless LLM-as-judge — both reading the file via
+`tracing.read_turns()`.
+
+## HTML viewer
+
+```bash
+uv run python diagnostics_report.py            # -> diagnostics/report.html
+```
+
+Generates one **self-contained** dark-mode HTML file (no external assets —
+opens offline via `file://`; also gitignored, as it inlines diary content).
+Sidebar lists turns grouped by session; clicking one shows its routing
+pipeline (Question → Extract → Retrieve → Plan → Answer as pure-CSS nodes), the
+routing narration, the retrieved entries (each collapsible, inside a bounded
+scroll box so a 90-entry result doesn't bury the answer), and the answer. A
+few lines of JS switch turns; everything else is HTML/CSS. `render(turns)` is
+pure (no I/O), covered by `tests/test_diagnostics_report.py`.
 
 ## Answer-key replay
 

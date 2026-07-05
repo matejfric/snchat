@@ -422,7 +422,7 @@ if st.session_state.vectorstore is not None:
             st.chat_message("assistant"),
             tracing.turn(
                 user_query, session_id=run_ctx.session_id if run_ctx else None
-            ) as tspan,
+            ) as trace,
         ):
             try:
                 # Routing + retrieval (+ map-reduce) happen behind a step-by-step
@@ -430,20 +430,16 @@ if st.session_state.vectorstore is not None:
                 with st.status("Understanding your question…") as status:
                     parsed = router.extract(user_query, chat_history)
                     scope = _scope_phrase(parsed)
-                    tspan.set("snchat.extraction", parsed.model_dump(exclude_none=True))
-                    tspan.set("snchat.scope", scope)
+                    trace.set("snchat.extraction", parsed.model_dump(exclude_none=True))
+                    trace.set("snchat.scope", scope)
                     status.update(label="Searching your diary…")
                     docs = router.retrieve(parsed)
-                    tspan.set("snchat.retrieval.count", len(docs))
-                    tspan.set(
-                        "snchat.retrieval.dates",
-                        [d.metadata.get("date_str", "?") for d in docs],
-                    )
+                    trace.set_retrieval(docs)
                     status.update(label=f"Reviewing {len(docs)} entries…")
                     messages, premap, canned = plan_generation(
                         docs, user_query, chat_history, today, scope, gen_llm
                     )
-                    tspan.set(
+                    trace.set(
                         "snchat.plan",
                         "canned"
                         if canned is not None
@@ -476,14 +472,18 @@ if st.session_state.vectorstore is not None:
                     for k, v in _usage_of(sink.get("message")).items():
                         usage[k] = usage.get(k, 0) + v
 
-                tspan.set("output.value", answer)
-                tspan.set("snchat.usage", usage)
+                trace.set("output.value", answer)
+                trace.set("snchat.usage", usage)
 
                 cap = format_metrics(usage)
                 if cap:
                     logger.info("Generation: %s", cap)
             except (RerunException, StopException):
-                raise  # script control (Stop click / rerun) — not an error
+                # Stop-click / rerun interrupts mid-stream; keep whatever streamed
+                # so the trace record (flushed on block exit) isn't answerless.
+                if st.session_state.partial:
+                    trace.set("output.value", st.session_state.partial)
+                raise  # script control — not an error
             except Exception as exc:
                 logger.exception("Answer generation failed")
                 st.session_state.messages.append(

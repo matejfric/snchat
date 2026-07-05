@@ -250,24 +250,23 @@ def run_case(
     for user, assistant in case.history:
         history += [HumanMessage(user), AIMessage(assistant)]
 
-    with tracing.turn(case.question, session_id=f"replay:{case.id}") as tspan:
+    with tracing.turn(case.question, session_id=f"replay:{case.id}") as trace:
         parsed = router.extract(case.question, history)
-        tspan.set("snchat.extraction", parsed.model_dump(exclude_none=True))
+        trace.set("snchat.extraction", parsed.model_dump(exclude_none=True))
         docs = router.retrieve(parsed)
-        dates = [d.metadata.get("date_str", "?") for d in docs]
-        tspan.set("snchat.retrieval.count", len(docs))
-        tspan.set("snchat.retrieval.dates", dates)
+        dates = [d.metadata.get("date_str", "?") for d in docs]  # for evaluate()
+        trace.set_retrieval(docs)
 
         checks = evaluate(case, parsed, dates)
-        tspan.set("snchat.replay.case", case.id)
-        tspan.set("snchat.replay.failed", [n for n, ok, _ in checks if not ok])
+        trace.set("snchat.replay.case", case.id)
+        trace.set("snchat.replay.failed", [n for n, ok, _ in checks if not ok])
 
         if gen_llm is not None:
             messages, _premap, canned = plan_generation(
                 docs, case.question, history, TODAY, _scope_phrase(parsed), gen_llm
             )
             answer = canned or "".join(stream_with_metrics(gen_llm, messages, {}))
-            tspan.set("output.value", answer)
+            trace.set("output.value", answer)
             print(f"    ↳ answer: {answer[:120].replace(chr(10), ' ')}…")
     return checks
 

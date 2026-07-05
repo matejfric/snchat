@@ -18,20 +18,31 @@ def _enable(tmp_path, monkeypatch):
     monkeypatch.setattr(tracing, "TRACE_PATH", tmp_path / "traces.jsonl")
 
 
+class _Doc:
+    """Minimal stand-in for a LangChain Document (set_retrieval is duck-typed)."""
+
+    def __init__(self, date, tags, text):
+        self.metadata = {"date_str": date, "tags": tags}
+        self.page_content = text
+
+
 def test_turn_writes_a_readable_record(tmp_path, monkeypatch):
     _enable(tmp_path, monkeypatch)
     with tracing.turn("what did I do skiing?", session_id="s1") as t:
         t.set("snchat.extraction", {"tags": ["lyže"], "month": 1})
-        t.set("snchat.retrieval.dates", ["2025-01-04"])
+        t.set_retrieval([_Doc("2025-01-04", ["lyže"], "Lyžovačka")])
         t.set("empty", [])  # skipped
 
     (rec,) = tracing.read_turns(tmp_path / "traces.jsonl")
     assert rec["input.value"] == "what did I do skiing?"
     assert rec["session.id"] == "s1"
-    assert rec["snchat.extraction"] == {
+    assert rec["snchat.extraction"] == {"tags": ["lyže"], "month": 1}  # structured
+    assert rec["snchat.retrieval.count"] == 1
+    assert rec["snchat.retrieval.docs"][0] == {
+        "date": "2025-01-04",
         "tags": ["lyže"],
-        "month": 1,
-    }  # stays structured
+        "text": "Lyžovačka",
+    }
     assert "empty" not in rec
     assert rec["id"] and rec["ts"]  # idempotent-judge key + timestamp present
 
