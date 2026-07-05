@@ -28,6 +28,7 @@ config in `constants.py`.
   - [3.2. Oversized context silently truncated](#32-oversized-context-silently-truncated)
   - [3.3. Extraction LLM truncated chat history](#33-extraction-llm-truncated-chat-history)
   - [3.4. Map-reduce dropped tags from the context](#34-map-reduce-dropped-tags-from-the-context)
+  - [3.5. Map step discarded the details a specific question needed](#35-map-step-discarded-the-details-a-specific-question-needed)
 - [4. Offline / library constraints](#4-offline--library-constraints)
   - [4.1. `get_num_tokens` breaks the offline guarantee](#41-get_num_tokens-breaks-the-offline-guarantee)
   - [4.2. Streaming dropped token metrics](#42-streaming-dropped-token-metrics)
@@ -104,6 +105,9 @@ config in `constants.py`.
 - **Symptom:** "summarize my whole diary" (no tag/date) can't be stuffed into one prompt.
 - **Fix (deliberate limitation):** with no filter, `retrieve()` falls back to similarity
   top-K and the UI shows a one-line caption suggesting the user add a tag or period.
+  The caption checks **every** scope field (tags, exact dates, ranges, keywords,
+  recent) — keyword and filtered overviews *did* enumerate all matches, so showing
+  it there would be wrong.
 
 ### 2.6. Scattered entity mentions exceeded top-K
 
@@ -237,6 +241,18 @@ config in `constants.py`.
   untagged), so they can't drift apart again. The map-reduce prefix is
   `[YYYY-MM-DD] (tags: …) <content>`, and the map prompt keeps tags next to each point
   so they survive into the reduce step.
+
+### 3.5. Map step discarded the details a specific question needed
+
+- **Symptom:** in map-reduce mode, a point question ("what was the name of the hut
+  on the January ski traverse?") got a vague answer — the detail existed in the
+  entries but never reached the final prompt.
+- **Cause:** map prompts asked for generic "key points"; the user's question first
+  appeared at the **reduce** step, which only sees the generic bullets. Map-reduce
+  is reachable for specific lookups too — `count ≤ FETCH_ALL_MAX` forces fetch-all
+  regardless of `breadth`, and long entries can exceed `SINGLE_PASS_BUDGET`.
+- **Fix:** every map/condense call carries the user's question and is told to
+  prioritize details relevant to it. Covered by `tests/test_generation.py`.
 
 ## 4. Offline / library constraints
 

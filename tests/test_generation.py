@@ -144,6 +144,9 @@ def test_map_reduce_batches_and_accumulates_usage() -> None:
     assert llm.reply in reduce_msg.content  # partials made it into the reduce
     # each map batch carried the dated (tags: …) prefix into the prompt
     assert "[2025-01-01] (tags: běh)" in llm.calls[0]
+    # every map/condense call sees the question — details a specific lookup needs
+    # must survive the bullet compression (the reduce can't recover them)
+    assert all("how did my running progress?" in call for call in llm.calls)
 
 
 def test_oversized_partials_are_condensed_until_reduce_fits() -> None:

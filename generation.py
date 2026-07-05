@@ -119,13 +119,17 @@ def _batch_by_chars(texts: list[str], budget: int) -> list[list[str]]:
     return batches
 
 
-def _summarize(gen_llm: ChatOllama, joined: str, usage: dict) -> str:
-    """One non-streamed map/condense call; its token usage is folded into `usage`."""
+def _summarize(gen_llm: ChatOllama, joined: str, user_query: str, usage: dict) -> str:
+    """One non-streamed map/condense call; its token usage is folded into `usage`.
+    The user's question rides along so the details a specific lookup needs survive
+    compression into bullets — the reduce step can't recover what the map dropped
+    (error_modes §3.5)."""
     resp = gen_llm.invoke(
         "/no_think\n"
         "Summarize the key points of these chronologically-ordered diary entries "
         "as a few concise bullet points, keeping the [YYYY-MM-DD] date (and any "
-        f"tags) next to each point.\n\n{joined}\n\nDated summary:"
+        "tags) next to each point. Prioritize details relevant to the user's "
+        f"question: {user_query}\n\n{joined}\n\nDated summary:"
     )
     for k, v in _usage_of(resp).items():
         usage[k] += v
@@ -230,7 +234,9 @@ def plan_generation(
     )
 
     premap = {"prompt": 0, "gen": 0, "eval_ns": 0}
-    partials = [_summarize(gen_llm, "\n\n".join(b), premap) for b in batches]
+    partials = [
+        _summarize(gen_llm, "\n\n".join(b), user_query, premap) for b in batches
+    ]
 
     # The joined partials can outgrow the window themselves (each map call may emit
     # up to GEN_NUM_PREDICT tokens): condense in rounds until the reduce prompt fits.
@@ -245,7 +251,7 @@ def plan_generation(
             len(partials),
         )
         partials = [
-            _summarize(gen_llm, "\n\n".join(group), premap)
+            _summarize(gen_llm, "\n\n".join(group), user_query, premap)
             for group in _batch_by_chars(partials, SINGLE_PASS_BUDGET)
         ]
         reduce_in = _reduce_input(user_query, "\n\n".join(partials), today, scope)

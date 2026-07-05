@@ -291,12 +291,23 @@ if st.session_state.vectorstore is not None:
                 f"🔎 Searched: {' · '.join(route_bits)} · {len(docs)} {_entries_text}"
             )
 
-            # A whole-diary overview can't be enumerated into one prompt; flag the
-            # fallback to similarity search so the user can narrow the scope.
+            # A whole-diary overview can't be enumerated into one prompt (in a
+            # reasonable amount of time - documented limitation); flag the
+            # fallback to similarity search so the user can narrow the scope. Only
+            # for a TRULY unscoped overview — keyword (lexical) and filtered/range
+            # overviews DID enumerate every match, so the tip would be wrong there.
             if (
                 parsed.breadth == "all"
                 and not parsed.recent
-                and not (parsed.tags or parsed.year or parsed.month or parsed.day)
+                and not parsed.keywords
+                and not (
+                    parsed.tags
+                    or parsed.year
+                    or parsed.month
+                    or parsed.day
+                    or parsed.date_from
+                    or parsed.date_to
+                )
             ):
                 st.caption(
                     "Tip: add a tag or time period for a full overview — showing the "
