@@ -106,6 +106,14 @@ class DiaryQueryRouter:
         self.llm = llm
         self.available_tags = available_tags or []
         self.k = k
+        # Reverse alias→tags map for normalizing extraction output: the prompt
+        # shows tag names NEXT TO their aliases, and a small local model may sometimes
+        # echo the alias ("skiing") or re-case the tag ("Lyže"). An alias listed
+        # under several tags fans out to all of them, like the alias table intends.
+        self._alias_to_tags: dict[str, list[str]] = {}
+        for tag in self.available_tags:
+            for form in (tag, *TAG_ALIASES.get(tag, [])):
+                self._alias_to_tags.setdefault(form.casefold(), []).append(tag)
 
     def _fallback_extract_query(self, query: str) -> DiarySearchQuery:
         """Degraded-but-predictable extraction for when structured output fails: no
@@ -193,9 +201,16 @@ class DiaryQueryRouter:
         if not parsed.query or not parsed.query.strip():
             parsed.query = query
 
-        # Keep only real tags (drop hallucinated values), de-duplicated in order.
-        allowed = set(self.available_tags)
-        parsed.tags = [t for t in dict.fromkeys(parsed.tags) if t in allowed]
+        # Normalize returned tags — exact value, re-cased tag, or an echoed alias
+        # ("skiing" fans out to lyže+skialp) — then drop hallucinated leftovers,
+        # de-duplicated in order. An exact-match clamp may silently lose the filter
+        # when the model echoed an alias (error_modes §2.10).
+        resolved = [
+            tag
+            for returned in parsed.tags
+            for tag in self._alias_to_tags.get(returned.strip().casefold(), [])
+        ]
+        parsed.tags = list(dict.fromkeys(resolved))
 
         # Normalize the date range: drop invalid dates, swap a reversed range.
         if parsed.date_from and _date_int(parsed.date_from) is None:

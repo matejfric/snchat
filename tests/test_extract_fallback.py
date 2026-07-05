@@ -72,6 +72,19 @@ def test_fallback_never_guesses_filters() -> None:
         assert parsed.breadth == "specific"
 
 
+def test_extract_normalizes_aliased_and_cased_tags() -> None:
+    # The prompt lists tag names next to their aliases, so a small model may echo
+    # "skiing" or "Lyže" instead of the exact tag value. An exact-match clamp
+    # dropped those silently — the query then ran with NO tag filter at all
+    # (error_modes §2.10). Aliases fan out like the alias table intends.
+    router = _router_returning(
+        DiarySearchQuery(query="x", tags=["skiing", "Lyže", "hallucinated", "lyže"]),
+        available_tags=["lyže", "skialp", "běh"],
+    )
+    parsed = router.extract("how was skiing this year?", [])
+    assert parsed.tags == ["lyže", "skialp"]
+
+
 def test_extract_swaps_a_reversed_date_range() -> None:
     router = _router_returning(
         DiarySearchQuery(query="x", date_from="2026-05-31", date_to="2026-03-01")
