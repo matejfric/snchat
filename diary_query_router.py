@@ -101,18 +101,23 @@ class DiaryQueryRouter:
         llm: ChatOllama,
         available_tags: list[str] | None = None,
         k: int = SEARCH_K,
+        tag_aliases: dict[str, list[str]] | None = None,
     ) -> None:
         self.vectorstore = vectorstore
         self.llm = llm
         self.available_tags = available_tags or []
         self.k = k
+        # The multilingual glossary is injectable (like available_tags) so tests
+        # don't depend on the user-editable TAG_ALIASES config; the app uses the
+        # config default.
+        self.tag_aliases = TAG_ALIASES if tag_aliases is None else tag_aliases
         # Reverse alias→tags map for normalizing extraction output: the prompt
         # shows tag names NEXT TO their aliases, and a small local model may sometimes
         # echo the alias ("skiing") or re-case the tag ("Lyže"). An alias listed
         # under several tags fans out to all of them, like the alias table intends.
         self._alias_to_tags: dict[str, list[str]] = {}
         for tag in self.available_tags:
-            for form in (tag, *TAG_ALIASES.get(tag, [])):
+            for form in (tag, *self.tag_aliases.get(tag, [])):
                 self._alias_to_tags.setdefault(form.casefold(), []).append(tag)
 
     def _fallback_extract_query(self, query: str) -> DiarySearchQuery:
@@ -138,8 +143,8 @@ class DiaryQueryRouter:
         tags_hint = ""
         if self.available_tags:
             lines = [
-                f"- {tag}: {', '.join(TAG_ALIASES[tag])}"
-                if TAG_ALIASES.get(tag)
+                f"- {tag}: {', '.join(self.tag_aliases[tag])}"
+                if self.tag_aliases.get(tag)
                 else f"- {tag}"
                 for tag in self.available_tags
             ]

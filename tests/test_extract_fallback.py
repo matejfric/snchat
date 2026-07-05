@@ -19,12 +19,19 @@ from diary_query_router import DiaryQueryRouter
 from diary_search_query import DiarySearchQuery
 
 
-def _router_returning(value, available_tags: list[str] | None = None):
+def _router_returning(
+    value,
+    available_tags: list[str] | None = None,
+    tag_aliases: dict[str, list[str]] | None = None,
+):
     """A router whose structured-output chain yields `value` regardless of input."""
     llm = MagicMock()
     llm.with_structured_output.return_value = RunnableLambda(lambda _: value)
     return DiaryQueryRouter(
-        vectorstore=None, llm=llm, available_tags=available_tags or []
+        vectorstore=None,
+        llm=llm,
+        available_tags=available_tags or [],
+        tag_aliases=tag_aliases,
     )
 
 
@@ -74,15 +81,25 @@ def test_fallback_never_guesses_filters() -> None:
 
 def test_extract_normalizes_aliased_and_cased_tags() -> None:
     # The prompt lists tag names next to their aliases, so a small model may echo
-    # "skiing" or "Lyže" instead of the exact tag value. An exact-match clamp
-    # dropped those silently — the query then ran with NO tag filter at all
-    # (error_modes §2.10). Aliases fan out like the alias table intends.
+    # an alias or re-case the tag instead of returning the exact value. An
+    # exact-match clamp dropped those silently — the query then ran with NO tag
+    # filter at all (error_modes §2.10). Uses a synthetic alias table so the test
+    # doesn't depend on the user-editable TAG_ALIASES config.
     router = _router_returning(
-        DiarySearchQuery(query="x", tags=["skiing", "Lyže", "hallucinated", "lyže"]),
-        available_tags=["lyže", "skialp", "běh"],
+        DiarySearchQuery(
+            query="x", tags=["shared-alias", "Gamma", "hallucinated", "alpha"]
+        ),
+        available_tags=["alpha", "beta", "gamma"],
+        tag_aliases={
+            "alpha": ["shared-alias"],
+            "beta": ["shared-alias", "solo-alias"],
+            # gamma deliberately absent: tags without aliases must still normalize
+        },
     )
-    parsed = router.extract("how was skiing this year?", [])
-    assert parsed.tags == ["lyže", "skialp"]
+    parsed = router.extract("anything", [])
+    # "shared-alias" fans out to alpha+beta, "Gamma" re-cases, junk is dropped,
+    # and the echoed exact "alpha" dedupes with the fan-out.
+    assert parsed.tags == ["alpha", "beta", "gamma"]
 
 
 def test_extract_swaps_a_reversed_date_range() -> None:
