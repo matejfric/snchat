@@ -30,6 +30,8 @@ uv run pytest                    # run tests (tests/)
 
 Automated checks are Ruff (lint/format) and a pytest suite in `tests/` (keyword matcher, extraction fallback, generation planning, and mock-diary parse/retrieval ground truth). `uv run python tests/mock_diary.py` builds a deterministic synthetic Standard Notes backup ZIP for manual end-to-end testing — see `docs/mock_diary.md` for its answer key. The VS Code workspace runs Ruff fix + import-organize on save.
 
+**Dev diagnostics** (`docs/diagnostics.md`): `uv run phoenix serve` starts a local trace UI at `localhost:6006`; running the app (or the replay below) with `SNCHAT_TRACE=1` then traces every turn — extraction/generation LLM calls, routing decisions, retrieved entries (`tracing.py`; a no-op without the env var, so the offline guarantee holds). `uv run python tests/replay_answer_key.py` replays the mock-diary answer key through live `extract()`+`retrieve()` and reports routing/retrieval discrepancies against ground truth (needs Ollama; never touches `./diary_vector_db`).
+
 ## Architecture
 
 **Module map:** `app.py` is the Streamlit UI and wiring; backup parsing lives in `parser.py` (`parse_standard_notes()`), query routing + retrieval in `diary_query_router.py` (with the `DiarySearchQuery` schema in `diary_search_query.py`), generation planning + token/metrics helpers in `generation.py`, and configuration — including the multilingual tag glossary `TAG_ALIASES` — in `constants.py`. The end-to-end flow:

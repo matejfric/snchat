@@ -9,6 +9,7 @@ from langchain_chroma import Chroma
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 import streamlit as st
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 from streamlit.runtime.scriptrunner_utils.exceptions import (
     RerunException,
     StopException,
@@ -35,6 +36,7 @@ from generation import (
     stream_with_metrics,
 )
 from parser import documents_from_notes, parse_standard_notes
+import tracing
 
 logging.basicConfig(
     level=logging.WARNING,  # third-party stays quiet without a per-library blocklist
@@ -45,6 +47,8 @@ logging.basicConfig(
 for _mod in ("__main__", "parser", "diary_query_router", "generation"):
     logging.getLogger(_mod).setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+tracing.setup()  # dev-only Phoenix tracing; no-op unless SNCHAT_TRACE=1
 
 # langchain-chroma's default collection name — existing DBs were built with it and
 # the startup load path below opens it implicitly via Chroma(persist_directory=…).
@@ -411,19 +415,39 @@ if st.session_state.vectorstore is not None:
             available_tags=st.session_state.get("available_tags", []),
         )
 
+        run_ctx = get_script_run_ctx()
         st.session_state.partial = ""  # reset here so a restarted run can't double up
-        with answer_slot, st.chat_message("assistant"):
+        with (
+            answer_slot,
+            st.chat_message("assistant"),
+            tracing.turn(
+                user_query, session_id=run_ctx.session_id if run_ctx else None
+            ) as tspan,
+        ):
             try:
                 # Routing + retrieval (+ map-reduce) happen behind a step-by-step
                 # status; the answer itself streams below it.
                 with st.status("Understanding your question…") as status:
                     parsed = router.extract(user_query, chat_history)
                     scope = _scope_phrase(parsed)
+                    tspan.set("snchat.extraction", parsed.model_dump(exclude_none=True))
+                    tspan.set("snchat.scope", scope)
                     status.update(label="Searching your diary…")
                     docs = router.retrieve(parsed)
+                    tspan.set("snchat.retrieval.count", len(docs))
+                    tspan.set(
+                        "snchat.retrieval.dates",
+                        [d.metadata.get("date_str", "?") for d in docs],
+                    )
                     status.update(label=f"Reviewing {len(docs)} entries…")
                     messages, premap, canned = plan_generation(
                         docs, user_query, chat_history, today, scope, gen_llm
+                    )
+                    tspan.set(
+                        "snchat.plan",
+                        "canned"
+                        if canned is not None
+                        else ("map_reduce" if premap else "single_pass"),
                     )
                     status.update(label="Writing answer…", state="complete")
 
@@ -451,6 +475,9 @@ if st.session_state.vectorstore is not None:
                     )
                     for k, v in _usage_of(sink.get("message")).items():
                         usage[k] = usage.get(k, 0) + v
+
+                tspan.set("output.value", answer)
+                tspan.set("snchat.usage", usage)
 
                 cap = format_metrics(usage)
                 if cap:
