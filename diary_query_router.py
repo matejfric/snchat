@@ -22,8 +22,21 @@ from diary_search_query import DiarySearchQuery
 logger = logging.getLogger(__name__)
 
 
+def _date_int(iso: str | None) -> int | None:
+    """Validated yyyy-mm-dd -> numeric yyyymmdd (the range-filter key); else None."""
+    try:
+        return int(dt.date.fromisoformat(iso).strftime("%Y%m%d"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _build_where(
-    year: int | None, month: int | None, day: int | None, tags: list[str]
+    year: int | None,
+    month: int | None,
+    day: int | None,
+    tags: list[str],
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict | None:
     """Build a Chroma metadata `where` filter from extracted query parameters.
 
@@ -36,6 +49,13 @@ def _build_where(
         conditions.append({"month": {"$eq": month}})
     if day is not None:
         conditions.append({"day": {"$eq": day}})
+
+    # Multi-day ranges compare on the numeric yyyymmdd key (`$gte`/`$lte` are
+    # numeric-only in Chroma); one operator per condition, joined by the $and below.
+    if (f := _date_int(date_from)) is not None:
+        conditions.append({"date_int": {"$gte": f}})
+    if (t := _date_int(date_to)) is not None:
+        conditions.append({"date_int": {"$lte": t}})
 
     # `tags` is stored as a list; $contains tests list membership.
     tag_conds = [{"tags": {"$contains": t}} for t in tags]
@@ -229,7 +249,7 @@ class DiaryQueryRouter:
             )
 
         system_msg = (
-            f"Today's date is {today.isoformat()} "
+            f"Today's date is {today.isoformat()}, a {today.strftime('%A')} "
             f"(year={today.year}, month={today.month}, day={today.day}). "
             "Extract search parameters from the user's question about their personal "
             "diary. The question may be a follow-up to the conversation above; resolve "
@@ -237,7 +257,13 @@ class DiaryQueryRouter:
             "Resolve relative dates (e.g. 'last year' means "
             f"year={today.year - 1}, 'this month' means month={today.month}, and "
             f"'today last year' means year={today.year - 1}, month={today.month}, "
-            f"day={today.day}). Always provide a semantic search query. Only set "
+            f"day={today.day}). For a MULTI-DAY period, set date_from and date_to "
+            "(inclusive, yyyy-mm-dd) instead of year/month/day: 'last week' means the "
+            "previous Monday through Sunday, 'this winter' spans December 1 through "
+            "the end of February ACROSS the year boundary, 'between March and May "
+            "2026' means 2026-03-01 to 2026-05-31; 'since March' sets only date_from. "
+            "Use year/month/day (never a range) for a single day, month, or year. "
+            "Always provide a semantic search query. Only set "
             "date/tag filters when the user explicitly or implicitly refers to a time "
             "period or tag. Set 'recent' to N only when the user asks for a specific "
             "number of the latest items ('last 10 climbing sessions' -> 10, 'my last "
@@ -276,13 +302,23 @@ class DiaryQueryRouter:
         allowed = set(self.available_tags)
         parsed.tags = [t for t in dict.fromkeys(parsed.tags) if t in allowed]
 
+        # Normalize the date range: drop invalid dates, swap a reversed range.
+        if parsed.date_from and _date_int(parsed.date_from) is None:
+            parsed.date_from = None
+        if parsed.date_to and _date_int(parsed.date_to) is None:
+            parsed.date_to = None
+        if parsed.date_from and parsed.date_to and parsed.date_from > parsed.date_to:
+            parsed.date_from, parsed.date_to = parsed.date_to, parsed.date_from
+
         logger.info(
-            "Routed query=%r year=%s month=%s day=%s tags=%s keywords=%s recent=%s "
-            "breadth=%s",
+            "Routed query=%r year=%s month=%s day=%s range=%s..%s tags=%s "
+            "keywords=%s recent=%s breadth=%s",
             parsed.query,
             parsed.year,
             parsed.month,
             parsed.day,
+            parsed.date_from,
+            parsed.date_to,
             parsed.tags,
             parsed.keywords,
             parsed.recent,
@@ -341,7 +377,14 @@ class DiaryQueryRouter:
         """Pick a retrieval strategy from the actual DB cardinality (not a brittle
         upfront mode): keyword/entity fuzzy match, most-recent-N, fetch-all, or
         similarity top-K."""
-        where = _build_where(parsed.year, parsed.month, parsed.day, parsed.tags)
+        where = _build_where(
+            parsed.year,
+            parsed.month,
+            parsed.day,
+            parsed.tags,
+            parsed.date_from,
+            parsed.date_to,
+        )
         logger.debug("Chroma where filter: %s", where)
 
         # Keyword/entity lookup: mentions of a named entity (a series, book, place) are

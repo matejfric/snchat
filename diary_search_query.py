@@ -13,6 +13,22 @@ class DiarySearchQuery(BaseModel):
     year: int | None = Field(default=None, description="Filter by year (e.g. 2024)")
     month: int | None = Field(default=None, description="Filter by month (1-12)")
     day: int | None = Field(default=None, description="Filter by day of month (1-31)")
+    date_from: str | None = Field(
+        default=None,
+        description=(
+            "Start of a date RANGE, inclusive, ISO yyyy-mm-dd. Use together with "
+            "date_to for MULTI-DAY periods ('last week', 'this winter', 'between "
+            "March and May'); set alone for open-ended 'since …'. Leave null and "
+            "use year/month/day for a single day, month, or year."
+        ),
+    )
+    date_to: str | None = Field(
+        default=None,
+        description=(
+            "End of the date range, inclusive, ISO yyyy-mm-dd; set alone for "
+            "open-ended 'until …'."
+        ),
+    )
     tags: list[str] = Field(
         default_factory=list,
         description="All diary tags this question is about (may be several); "

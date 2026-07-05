@@ -20,6 +20,7 @@ config in `constants.py`.
   - [2.5. Whole-diary overview isn't enumerable](#25-whole-diary-overview-isnt-enumerable)
   - [2.6. Scattered entity mentions exceeded top-K](#26-scattered-entity-mentions-exceeded-top-k)
   - [2.7. Structured extraction returned None (no tool call)](#27-structured-extraction-returned-none-no-tool-call)
+  - [2.8. Multi-day periods were inexpressible ("last week", "this winter") **\[re-index\]**](#28-multi-day-periods-were-inexpressible-last-week-this-winter-re-index)
 - [3. Generation \& conversation](#3-generation--conversation)
   - [3.1. Cross-turn answer confusion (follow-ups drift to the wrong scope)](#31-cross-turn-answer-confusion-follow-ups-drift-to-the-wrong-scope)
   - [3.2. Oversized context silently truncated](#32-oversized-context-silently-truncated)
@@ -142,6 +143,24 @@ config in `constants.py`.
   `_fallback_extract_query()` (which routes a bare overview to `breadth="all"`, no
   filter). Covered by `tests/test_extract_fallback.py`.
 
+### 2.8. Multi-day periods were inexpressible ("last week", "this winter") **[re-index]**
+
+- **Symptom:** range questions either lost their date filter entirely (top-K
+  similarity over the whole diary) or were squeezed into one wrong month — "this
+  winter" → December only, silently dropping January/February of the next year.
+- **Cause:** `DiarySearchQuery` offered only exact-equality `year`/`month`/`day`;
+  Chroma's `$gte`/`$lte` are numeric-only, and entries had no numeric date key to
+  compare on.
+- **Fix:** entries carry `date_int` (`yyyymmdd`, built in
+  `parser.documents_from_notes()`); the schema gained inclusive ISO
+  `date_from`/`date_to` (either may stand alone for "since …"/"until …"), which
+  `_build_where()` turns into `$gte`/`$lte` on `date_int`. The extraction prompt
+  states today's **weekday** so "last week" resolves to the previous Mon–Sun, and
+  spells out that winter-style ranges cross the year boundary; `extract()` drops
+  invalid dates and swaps a reversed range. Old indexes lack `date_int` (a range
+  filter matches nothing), so the app warns on startup until the backup is
+  re-uploaded. Covered by range tests in `tests/test_mock_retrieval.py`.
+
 ## 3. Generation & conversation
 
 ### 3.1. Cross-turn answer confusion (follow-ups drift to the wrong scope)
@@ -263,7 +282,17 @@ generation; each group cross-references the failure mode above.
 - **Negative control:** "when did I feel anxious?" → thematic, no named entity →
   `keywords` stays **empty** → must route to the semantic/other path, not the lexical one.
 
-### 6.6. Conversation window (→ 4.3)
+### 6.6. Date ranges (→ 2.8)
+
+- "what did I do last week?" → `date_from`/`date_to` = previous Mon–Sun.
+- "how was my skiing this winter?" → tags `lyže`+`skialp` **and** a Dec-1 → end-of-Feb
+  range **across the year boundary**.
+- "what happened between March and May 2025?" → `2025-03-01` → `2025-05-31`.
+- "what have I written since June?" → open-ended: `date_from` only.
+- **Negative control:** "what did I do in May 2025?" → single month → `year`+`month`,
+  **no** range.
+
+### 6.7. Conversation window (→ 4.3)
 
 - A long multi-turn chat → sidebar context gauge warns past `TOKEN_WARN_RATIO`; **New
   chat** resets `st.session_state.messages`.

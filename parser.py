@@ -7,6 +7,8 @@ import tempfile
 from typing import TypedDict
 import zipfile
 
+from langchain_core.documents import Document
+
 from constants import EXPECTED_SN_VERSION
 
 logger = logging.getLogger(__name__)
@@ -93,3 +95,30 @@ def parse_standard_notes(
 
     parsed_data.sort(key=lambda x: x["date"])
     return parsed_data
+
+
+def documents_from_notes(parsed_notes: list[StandardNotesData]) -> list[Document]:
+    """Map parsed notes to LangChain Documents — one Document per entry (entries are
+    tiny; no chunking). Shared by the app's ingest and the retrieval tests so the
+    metadata contract can't drift between them."""
+    documents = []
+    for note in parsed_notes:
+        if not note["text"].strip():
+            continue
+        date = note["date"]
+        metadata = {
+            "uuid": note["uuid"],
+            "year": date.year,
+            "month": date.month,
+            "day": date.day,
+            "date_str": date.isoformat(),
+            # Numeric yyyymmdd — Chroma's $gte/$lte are numeric-only, so date
+            # RANGES filter on this key.
+            "date_int": date.year * 10000 + date.month * 100 + date.day,
+            "title": note["title"].strip(),
+        }
+        # Chroma forbids empty lists; omit the key for untagged entries.
+        if note["tags"]:
+            metadata["tags"] = sorted(note["tags"])
+        documents.append(Document(page_content=note["text"], metadata=metadata))
+    return documents

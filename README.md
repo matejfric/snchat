@@ -16,7 +16,9 @@ Built with Streamlit · LangChain · ChromaDB · [Ollama](https://ollama.com/).
 - 🏷️ **Metadata-aware retrieval** — filters by tag and date, not just semantic
   similarity. Multilingual tag matching lets you ask in English about non-English tags.
 - 📅 **Temporal alignment** — chronological summaries and progressions ("how did my
-  running develop?") and "most recent N" queries ("summarize my last 10 runs").
+  running develop?"), date ranges ("what did I do last week?", "how was my winter?" —
+  including ranges across a year boundary), and "most recent N" queries ("summarize
+  my last 10 runs").
 - 🔎 **Breadth that fits the question** — narrow scopes return *every* matching entry;
   broad ones are summarized via map-reduce — instead of a fixed top-K cut-off.
 - ⚡ **Live & observable** — answers stream token-by-token with a tokens/sec readout, and

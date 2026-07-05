@@ -84,7 +84,13 @@ def _scope_phrase(parsed: DiarySearchQuery) -> str:
     to anchor the answer so terse follow-ups ('and in 2026?') aren't pulled toward an
     earlier turn. Built from the filters that were applied, so it is ground truth."""
     topic = parsed.query.strip() if parsed.query else ""
-    if parsed.year and parsed.month and parsed.day:
+    if parsed.date_from and parsed.date_to:
+        when = f"from {parsed.date_from} to {parsed.date_to}"
+    elif parsed.date_from:
+        when = f"since {parsed.date_from}"
+    elif parsed.date_to:
+        when = f"until {parsed.date_to}"
+    elif parsed.year and parsed.month and parsed.day:
         when = f"on {parsed.year:04d}-{parsed.month:02d}-{parsed.day:02d}"
     elif parsed.year and parsed.month:
         when = f"in {parsed.year:04d}-{parsed.month:02d}"

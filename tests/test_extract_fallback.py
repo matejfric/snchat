@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 from langchain_core.runnables import RunnableLambda
 
 from diary_query_router import DiaryQueryRouter
+from diary_search_query import DiarySearchQuery
 
 
 def _router_returning(value) -> DiaryQueryRouter:
@@ -40,3 +41,21 @@ def test_extract_falls_back_on_exception() -> None:
     parsed = router.extract("what did I do in march?", [])
     assert parsed is not None
     assert parsed.month == 3  # fallback's regex still extracts the month
+
+
+def test_extract_swaps_a_reversed_date_range() -> None:
+    router = _router_returning(
+        DiarySearchQuery(query="x", date_from="2026-05-31", date_to="2026-03-01")
+    )
+    parsed = router.extract("between March and May 2026", [])
+    assert (parsed.date_from, parsed.date_to) == ("2026-03-01", "2026-05-31")
+
+
+def test_extract_drops_invalid_range_dates() -> None:
+    # A small local model can emit garbage — invalid dates must not reach Chroma.
+    router = _router_returning(
+        DiarySearchQuery(query="x", date_from="not-a-date", date_to="2026-13-99")
+    )
+    parsed = router.extract("q", [])
+    assert parsed.date_from is None
+    assert parsed.date_to is None

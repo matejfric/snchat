@@ -7,7 +7,6 @@ import tempfile
 
 import chromadb
 from langchain_chroma import Chroma
-from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 import streamlit as st
@@ -31,7 +30,7 @@ from generation import (
     plan_generation,
     stream_with_metrics,
 )
-from parser import parse_standard_notes
+from parser import documents_from_notes, parse_standard_notes
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -81,25 +80,7 @@ with st.sidebar:
                 parsed_notes = parse_standard_notes(tmp_file_path)
                 logger.info("Parsed %d notes from backup", len(parsed_notes))
 
-                # One Document per diary entry (entries are tiny — no chunking).
-                documents = []
-                for note in parsed_notes:
-                    if not note["text"].strip():
-                        continue
-                    metadata = {
-                        "uuid": note["uuid"],
-                        "year": note["date"].year,
-                        "month": note["date"].month,
-                        "day": note["date"].day,
-                        "date_str": note["date"].isoformat(),
-                        "title": note["title"].strip(),
-                    }
-                    # Chroma forbids empty lists; omit the key for untagged entries.
-                    if note["tags"]:
-                        metadata["tags"] = sorted(note["tags"])
-                    documents.append(
-                        Document(page_content=note["text"], metadata=metadata)
-                    )
+                documents = documents_from_notes(parsed_notes)
 
                 if not documents:
                     st.error(
@@ -202,6 +183,11 @@ if st.session_state.vectorstore is None:
                 all_tags.update(meta.get("tags", []))
             st.session_state.available_tags = sorted(all_tags)
             logger.info("Recovered tags from DB: %s", st.session_state.available_tags)
+            if any("date_int" not in m for m in stored["metadatas"]):
+                st.warning(
+                    "This index predates date-range support — re-upload your "
+                    "backup to enable questions like “what did I do last week?”."
+                )
         st.info("Loaded existing diary database from disk.")
     else:
         st.warning(
@@ -286,7 +272,11 @@ if st.session_state.vectorstore is not None:
                 route_bits.append("keywords: " + ", ".join(parsed.keywords))
             if not route_bits and parsed.query.strip():
                 route_bits.append(parsed.query.strip())
-            if parsed.year:
+            if parsed.date_from or parsed.date_to:
+                route_bits.append(
+                    f"{parsed.date_from or '…'} → {parsed.date_to or '…'}"
+                )
+            elif parsed.year:
                 route_bits.append(
                     "-".join(
                         f"{v:02d}" for v in (parsed.year, parsed.month, parsed.day) if v
