@@ -69,20 +69,26 @@ def _build_where(
     return {"$and": conditions}
 
 
-def _keyword_score(candidate: str, haystack: str) -> float:
-    """Match score (0-100) of a lowercased keyword candidate against lowercased text.
+def _keyword_score(candidate: str, text: str) -> float:
+    """Match score (0-100) of a keyword candidate against entry text.
 
-    Short single tokens (acronyms like 'got') are a binary whole-word match: a substring
-    test false-positives ('got' in 'forgot') and fuzzy scorers mis-rank 3-char strings.
-    Longer / multi-word forms use rapidfuzz `partial_ratio`, which scores the best-
-    matching window — so a verbatim mention scores 100 regardless of entry length and
-    Czech declension still scores high (e.g. 'hra o trůny' -> 'Hře o trůny'). NOT
-    `WRatio`: it scales partial matches down to 0.6 once the entry is >~8x longer than
-    the query, so a verbatim hit in a normal diary paragraph collapsed to ~60 and was
-    dropped below the threshold."""
+    Short single tokens (acronyms/proper nouns like 'GoT', 'Duna') are a binary
+    whole-word match — case-EXACT when the candidate carries case, so 'GoT' doesn't
+    match the common word 'got' ('i got up early') and 'Duna' doesn't match a sand
+    'duna'; an all-lowercase candidate matches case-insensitively (the escape hatch
+    for diaries that write acronyms lowercase — alternate casings like 'GOT' must
+    come from the LLM's variant expansion). A substring test would false-match
+    inside 'forgot', and fuzzy scorers mis-rank 3-char strings (error_modes §2.11).
+    Longer / multi-word forms use rapidfuzz `partial_ratio` over casefolded text,
+    which scores the best-matching window — so a verbatim mention scores 100
+    regardless of entry length and Czech declension still scores high (e.g.
+    'hra o trůny' -> 'Hře o trůny'). NOT `WRatio`: it scales partial matches down
+    to 0.6 once the entry is >~8x longer than the query, so a verbatim hit in a
+    normal diary paragraph collapsed to ~60 and was dropped below the threshold."""
     if len(candidate) <= 4 and " " not in candidate:
-        return 100.0 if re.search(rf"\b{re.escape(candidate)}\b", haystack) else 0.0
-    return fuzz.partial_ratio(candidate, haystack)
+        flags = 0 if any(ch.isupper() for ch in candidate) else re.IGNORECASE
+        return 100.0 if re.search(rf"\b{re.escape(candidate)}\b", text, flags) else 0.0
+    return fuzz.partial_ratio(candidate.casefold(), text.casefold())
 
 
 def _keyword_hit(candidate: str, haystack: str) -> bool:
@@ -261,14 +267,14 @@ class DiaryQueryRouter:
         entry — the point is to catch all scattered mentions that semantic top-K would
         miss; `recent` then trims to the N latest if the user asked for a count."""
         fetched = self.vectorstore.get(where=where, include=["documents", "metadatas"])
-        candidates = [k.lower() for k in parsed.keywords if k.strip()]
+        # Original casing kept: short case-carrying forms match case-exactly.
+        candidates = [k.strip() for k in parsed.keywords if k.strip()]
         docs: list[Document] = []
         best = 0.0  # highest score seen, so a 0-match result is explainable in the log
         for content, meta in zip(
             fetched["documents"], fetched["metadatas"], strict=True
         ):
-            haystack = content.lower()
-            score = max((_keyword_score(c, haystack) for c in candidates), default=0.0)
+            score = max((_keyword_score(c, content) for c in candidates), default=0.0)
             best = max(best, score)
             if score >= FUZZY_MATCH_THRESHOLD:
                 docs.append(Document(page_content=content, metadata=meta))

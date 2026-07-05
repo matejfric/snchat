@@ -23,6 +23,7 @@ config in `constants.py`.
   - [2.8. Multi-day periods were inexpressible ("last week", "this winter") **\[re-index\]**](#28-multi-day-periods-were-inexpressible-last-week-this-winter-re-index)
   - [2.9. Regex fallback guessed wrong filters](#29-regex-fallback-guessed-wrong-filters)
   - [2.10. LLM echoed a tag alias; the clamp silently dropped the filter](#210-llm-echoed-a-tag-alias-the-clamp-silently-dropped-the-filter)
+  - [2.11. Short acronym candidates matched common words ("GoT" ⊨ "got")](#211-short-acronym-candidates-matched-common-words-got--got)
 - [3. Generation \& conversation](#3-generation--conversation)
   - [3.1. Cross-turn answer confusion (follow-ups drift to the wrong scope)](#31-cross-turn-answer-confusion-follow-ups-drift-to-the-wrong-scope)
   - [3.2. Oversized context silently truncated](#32-oversized-context-silently-truncated)
@@ -123,7 +124,8 @@ config in `constants.py`.
   `retrieve()` takes a **lexical branch** (`_fuzzy_retrieve()`): fetch the full
   (optionally date/tag-filtered) set and keep **every** entry matching any candidate via
   `_keyword_hit()` — a **whole-word** match for short acronyms ("GoT"; `WRatio`
-  under-scores them and a bare substring test false-matches "forgot"), else rapidfuzz
+  under-scores them and a bare substring test false-matches "forgot"; case-exact
+  when the form carries case, see §2.11), else rapidfuzz
   `partial_ratio ≥ FUZZY_MATCH_THRESHOLD` (best-matching window: a verbatim mention
   scores 100 regardless of entry length, and declension still scores high). The full
   match set then flows into the existing fetch-all → map-reduce generation; `recent`
@@ -199,6 +201,22 @@ config in `constants.py`.
   through a reverse alias→tag map built from `TAG_ALIASES` (an echoed "skiing"
   fans out to `lyže`+`skialp`, matching the alias table's intent); only unknown
   values are dropped. Covered by `tests/test_extract_fallback.py`.
+
+### 2.11. Short acronym candidates matched common words ("GoT" ⊨ "got")
+
+- **Symptom:** entity lookups whose expansion contains a short form — "GoT", "Duna"
+  — also returned every entry containing the ordinary word: English snippets with
+  "i got up early", a sand "duna". Each false hit flows into generation as a
+  supposed mention of the entity.
+- **Cause:** the lexical branch lowercased both candidate and entry text before the
+  whole-word match (§2.6), erasing exactly the signal — casing — that separates an
+  acronym/proper noun from a common word.
+- **Fix:** candidates keep their original casing; a short form that **carries case**
+  ("GoT", "Duna") must match that exact casing, while an all-lowercase short form
+  stays case-insensitive (the escape hatch for diaries that write acronyms
+  lowercase — alternate casings like "GOT" come from the LLM's variant expansion).
+  Long/multi-word forms are casefolded as before. Covered by
+  `tests/test_keyword_hit.py`.
 
 ## 3. Generation & conversation
 

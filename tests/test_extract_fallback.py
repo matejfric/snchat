@@ -102,6 +102,14 @@ def test_extract_normalizes_aliased_and_cased_tags() -> None:
     assert parsed.tags == ["alpha", "beta", "gamma"]
 
 
+def test_extract_backfills_an_empty_query() -> None:
+    # A structured result with a blank semantic query must not reach retrieval —
+    # similarity search on "" is meaningless; the raw question takes its place.
+    router = _router_returning(DiarySearchQuery(query="   "))
+    parsed = router.extract("kolik jsem toho naběhal?", [])
+    assert parsed.query == "kolik jsem toho naběhal?"
+
+
 def test_extract_swaps_a_reversed_date_range() -> None:
     router = _router_returning(
         DiarySearchQuery(query="x", date_from="2026-05-31", date_to="2026-03-01")

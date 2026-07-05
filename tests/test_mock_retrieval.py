@@ -113,6 +113,16 @@ def test_fuzzy_lookup_with_recent_trims_to_latest(router) -> None:
     assert _dates(router.retrieve(q)) == sorted(GOT_DATES)[-3:]
 
 
+def test_fuzzy_lookup_respects_date_filter(router) -> None:
+    # The lexical branch scans the date/tag-filtered subset — if the `where` were
+    # dropped on the way to _fuzzy_retrieve, mentions from other years would leak in.
+    assert any(d.startswith("2025-") for d in WITCHER_DATES)  # span crosses years,
+    assert any(d.startswith("2026-") for d in WITCHER_DATES)  # else this is vacuous
+    q = DiarySearchQuery(query="witcher", keywords=list(WITCHER_KEYWORDS), year=2026)
+    expected = sorted(d for d in WITCHER_DATES if d.startswith("2026-"))
+    assert _dates(router.retrieve(q)) == expected
+
+
 def _entry_dates_between(lo: str, hi: str) -> list[str]:
     """Fixture ground truth: all entry dates in the inclusive ISO range."""
     return sorted(e.date for e in ENTRIES if lo <= e.date <= hi)
